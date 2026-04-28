@@ -45,6 +45,10 @@ const (
 	ReasonChainIDMismatch
 	ReasonPublicKeyMissing
 	ReasonSignatureMissing
+	ReasonInvalidContent     // Phase 2: recomputed content hash != header.ContentHash
+	ReasonNotMember          // Phase 2: target AccountHeader not present in evidence
+	ReasonHeightOutOfWindow  // Phase 2: commitment height not in retained window
+	ReasonMissingProof       // Phase 2: no Flat or Merkle proof attached
 )
 
 // String returns a stable, snake-case-equivalent name for serialization.
@@ -72,6 +76,14 @@ func (r ReasonCode) String() string {
 		return "ReasonPublicKeyMissing"
 	case ReasonSignatureMissing:
 		return "ReasonSignatureMissing"
+	case ReasonInvalidContent:
+		return "ReasonInvalidContent"
+	case ReasonNotMember:
+		return "ReasonNotMember"
+	case ReasonHeightOutOfWindow:
+		return "ReasonHeightOutOfWindow"
+	case ReasonMissingProof:
+		return "ReasonMissingProof"
 	default:
 		return fmt.Sprintf("ReasonCode(%d)", int(r))
 	}

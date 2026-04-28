@@ -1,9 +1,15 @@
 // Command zenon-spv is the CLI entry point for the Zenon SPV verifier.
 //
-// At MVP scope only the verify-headers subcommand is implemented:
+// Subcommands:
 //
-//	zenon-spv verify-headers <bundle.json> [--window {low|medium|high}]
-//	                                       [--genesis-config <path>]
+//	zenon-spv verify-headers     <bundle.json> [--window {low|medium|high}] [--genesis-config <path>]
+//	zenon-spv verify-commitment  <bundle.json> [--window ...] [--genesis-config ...]
+//
+// verify-commitment runs verify-headers first and then validates each
+// CommitmentEvidence in the bundle's `commitments` array. Exit codes
+// reflect the worst per-commitment outcome (REFUSED > REJECT > ACCEPT
+// in severity); a header-level failure short-circuits before any
+// commitment is evaluated.
 //
 // Default genesis is the embedded mainnet trust root
 // (chain_id=1, height=1; see internal/verify/genesis.go and
@@ -40,11 +46,18 @@ import (
 const usage = `zenon-spv — resource-bounded Zenon SPV verifier
 
 Usage:
-  zenon-spv verify-headers <bundle.json> [--window {low|medium|high}] [--genesis-config <path>]
+  zenon-spv verify-headers     <bundle.json> [--window {low|medium|high}] [--genesis-config <path>]
+  zenon-spv verify-commitment  <bundle.json> [--window ...] [--genesis-config ...]
 
 Subcommands:
-  verify-headers   Verify a HeaderBundle JSON file. Exits 0 on ACCEPT,
-                   1 on REJECT, 2 on REFUSED.
+  verify-headers      Verify a HeaderBundle JSON file. Exits 0 on ACCEPT,
+                      1 on REJECT, 2 on REFUSED.
+
+  verify-commitment   Verify the bundle's headers, then verify each
+                      commitment in the bundle's "commitments" array.
+                      Exits 0 only if all commitments ACCEPT; 1 on any
+                      REJECT (including a header-level REJECT); 2 on
+                      any REFUSED.
 
 Genesis trust root defaults to the embedded mainnet anchor. Override
 via --genesis-config (JSON file) or ZENON_SPV_GENESIS_HASH +
@@ -63,12 +76,96 @@ func main() {
 	switch os.Args[1] {
 	case "verify-headers":
 		os.Exit(runVerifyHeaders(os.Args[2:]))
+	case "verify-commitment":
+		os.Exit(runVerifyCommitment(os.Args[2:]))
 	case "-h", "--help", "help":
 		fmt.Print(usage)
 		os.Exit(0)
 	default:
 		fmt.Fprintf(os.Stderr, "unknown subcommand: %s\n\n%s", os.Args[1], usage)
 		os.Exit(64)
+	}
+}
+
+func runVerifyCommitment(args []string) int {
+	fs := flag.NewFlagSet("verify-commitment", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+	tier := fs.String("window", "low", "policy window tier: low | medium | high")
+	genesisConfig := fs.String("genesis-config", "", "path to genesis trust root JSON file (overrides env)")
+	if err := fs.Parse(args); err != nil {
+		return 64
+	}
+	if fs.NArg() != 1 {
+		fmt.Fprintln(os.Stderr, "verify-commitment: expected exactly one bundle path")
+		fs.Usage()
+		return 64
+	}
+	bundlePath := fs.Arg(0)
+
+	genesis, err := loadGenesis(*genesisConfig)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "genesis: %v\n", err)
+		return 70
+	}
+	bundle, err := proof.LoadHeaderBundle(bundlePath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "bundle: %v\n", err)
+		return 70
+	}
+	if bundle.ChainID != genesis.ChainID {
+		fmt.Printf("REJECT %s bundle chain_id=%d != trust-root chain_id=%d\n",
+			verify.ReasonChainIDMismatch, bundle.ChainID, genesis.ChainID)
+		return 1
+	}
+	if bundle.ClaimedGenesis != genesis.HeaderHash {
+		fmt.Printf("REJECT %s claimed_genesis=%x != trust-root=%x\n",
+			verify.ReasonGenesisMismatch, bundle.ClaimedGenesis, genesis.HeaderHash)
+		return 1
+	}
+
+	policy := verify.PolicyForTier(*tier)
+	state := verify.NewHeaderState(genesis, policy)
+	headerResult, newState := verify.VerifyHeaders(bundle.Headers, state, policy)
+	fmt.Printf("headers: %s\n", headerResult)
+	if headerResult.Outcome != verify.OutcomeAccept {
+		switch headerResult.Outcome {
+		case verify.OutcomeReject:
+			return 1
+		case verify.OutcomeRefused:
+			return 2
+		default:
+			return 70
+		}
+	}
+
+	if len(bundle.Commitments) == 0 {
+		fmt.Println("commitments: REFUSED ReasonMissingEvidence (no commitments in bundle)")
+		return 2
+	}
+
+	results := verify.VerifyCommitments(newState, bundle.Commitments)
+	worst := verify.OutcomeAccept
+	for i, r := range results {
+		c := bundle.Commitments[i]
+		fmt.Printf("commitment[%d] height=%d addr=%x: %s\n", i, c.Height, c.Target.Address, r)
+		switch r.Outcome {
+		case verify.OutcomeRefused:
+			if worst != verify.OutcomeReject {
+				worst = verify.OutcomeRefused
+			}
+		case verify.OutcomeReject:
+			worst = verify.OutcomeReject
+		}
+	}
+	switch worst {
+	case verify.OutcomeAccept:
+		return 0
+	case verify.OutcomeReject:
+		return 1
+	case verify.OutcomeRefused:
+		return 2
+	default:
+		return 70
 	}
 }
 

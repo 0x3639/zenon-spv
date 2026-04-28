@@ -54,6 +54,45 @@ type peerResult struct {
 	err     error
 }
 
+// peerDetailedResult captures one peer's detailed response.
+type peerDetailedResult struct {
+	url      string
+	detailed []DetailedHeader
+	err      error
+}
+
+// FetchByHeightDetailed fans FetchByHeightDetailed to all peers and
+// returns the slice only if at least Quorum peers agree on every
+// header hash at every height. Cross-peer agreement on the (signed)
+// momentum hash transitively implies agreement on the parsed
+// content, since the content hash is bound into the signed envelope.
+func (m *MultiClient) FetchByHeightDetailed(ctx context.Context, start, count uint64) ([]DetailedHeader, error) {
+	if len(m.Peers) == 0 {
+		return nil, errors.New("multi: no peers configured")
+	}
+	q := m.Quorum
+	if q < 1 {
+		q = len(m.Peers)
+	}
+	if q > len(m.Peers) {
+		return nil, fmt.Errorf("multi: quorum %d > peers %d", q, len(m.Peers))
+	}
+
+	results := make([]peerDetailedResult, len(m.Peers))
+	var wg sync.WaitGroup
+	for i, p := range m.Peers {
+		wg.Add(1)
+		go func(i int, p *Client) {
+			defer wg.Done()
+			d, err := p.FetchByHeightDetailed(ctx, start, count)
+			results[i] = peerDetailedResult{url: p.URL, detailed: d, err: err}
+		}(i, p)
+	}
+	wg.Wait()
+
+	return reconcileDetailed(results, q)
+}
+
 // FetchByHeight fans the request to all peers and returns the slice
 // only if at least Quorum peers returned identical (recomputed)
 // header hashes for every height. If peers disagree, returns
@@ -135,6 +174,47 @@ func (m *MultiClient) FetchFrontierAtAgreedHeight(ctx context.Context, safetyMar
 		return chain.Header{}, err
 	}
 	return headers[0], nil
+}
+
+// reconcileDetailed collects per-peer DetailedHeader slices, requires
+// at least q peers returned a usable slice, and requires every
+// (height, hash) pair to be identical across those peers. Returns
+// the first usable peer's slice (which includes the parsed Content).
+func reconcileDetailed(results []peerDetailedResult, q int) ([]DetailedHeader, error) {
+	good := results[:0]
+	var firstErrs []string
+	for _, r := range results {
+		if r.err != nil {
+			firstErrs = append(firstErrs, fmt.Sprintf("  %s: %v", r.url, r.err))
+			continue
+		}
+		good = append(good, r)
+	}
+	if len(good) < q {
+		return nil, fmt.Errorf("%w: %d/%d peers usable; errors:\n%s",
+			ErrNotEnoughPeers, len(good), q, strings.Join(firstErrs, "\n"))
+	}
+	pin := good[0]
+	for _, r := range good[1:] {
+		if len(r.detailed) != len(pin.detailed) {
+			return nil, fmt.Errorf("%w: %s returned %d momentums, %s returned %d",
+				ErrPeerDisagreement, r.url, len(r.detailed), pin.url, len(pin.detailed))
+		}
+		for i := range pin.detailed {
+			if r.detailed[i].Header.Height != pin.detailed[i].Header.Height {
+				return nil, fmt.Errorf("%w: %s height[%d]=%d vs %s height[%d]=%d",
+					ErrPeerDisagreement, r.url, i, r.detailed[i].Header.Height,
+					pin.url, i, pin.detailed[i].Header.Height)
+			}
+			if r.detailed[i].Header.HeaderHash != pin.detailed[i].Header.HeaderHash {
+				return nil, fmt.Errorf("%w: at height %d, %s hash=%x vs %s hash=%x",
+					ErrPeerDisagreement, pin.detailed[i].Header.Height,
+					r.url, r.detailed[i].Header.HeaderHash,
+					pin.url, pin.detailed[i].Header.HeaderHash)
+			}
+		}
+	}
+	return pin.detailed, nil
 }
 
 // reconcileByHeight collects per-peer slices, requires at least q

@@ -69,6 +69,7 @@ func run(args []string) error {
 	out := fs.String("out", "-", "bundle output path; '-' = stdout")
 	checkpointPath := fs.String("checkpoint", "", "if set, write the trust-anchor checkpoint to this path")
 	timeout := fs.Duration("timeout", 30*time.Second, "RPC timeout (per peer)")
+	commitmentsFlag := fs.String("commitments", "", "comma-separated z1... addresses to attest in the bundle window (also retains parsed Content slices)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -85,10 +86,15 @@ func run(args []string) error {
 		*rpcURL = urls[0]
 	}
 
+	targetAddresses, err := decodeTargetAddresses(*commitmentsFlag)
+	if err != nil {
+		return err
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
 	defer cancel()
 
-	var headers []chain.Header
+	var detailed []fetch.DetailedHeader
 	var sourceLabel string
 	if multi {
 		mc := fetch.NewMultiClient(urls)
@@ -103,7 +109,7 @@ func run(args []string) error {
 			return fmt.Errorf("end height %d too low for --count=%d", end, *count)
 		}
 		start := end - uint64(*count)
-		headers, err = mc.FetchByHeight(ctx, start, uint64(*count+1))
+		detailed, err = mc.FetchByHeightDetailed(ctx, start, uint64(*count+1))
 		if err != nil {
 			return fmt.Errorf("multi-fetch [%d..%d]: %w", start, end, err)
 		}
@@ -118,24 +124,31 @@ func run(args []string) error {
 			return fmt.Errorf("end height %d too low for --count=%d", end, *count)
 		}
 		start := end - uint64(*count)
-		headers, err = client.FetchByHeight(ctx, start, uint64(*count+1))
+		detailed, err = client.FetchByHeightDetailed(ctx, start, uint64(*count+1))
 		if err != nil {
 			return fmt.Errorf("fetch [%d..%d]: %w", start, end, err)
 		}
 		sourceLabel = "single-peer"
 	}
 
-	anchor := headers[0]
-	bundleHeaders := headers[1:]
-	if uint64(len(bundleHeaders)) != uint64(*count) {
-		return fmt.Errorf("internal: got %d bundle headers, expected %d", len(bundleHeaders), *count)
+	if uint64(len(detailed)) != uint64(*count+1) {
+		return fmt.Errorf("internal: got %d detailed momentums, expected %d", len(detailed), *count+1)
 	}
+	anchor := detailed[0].Header
+	bundleDetailed := detailed[1:]
+	bundleHeaders := make([]chain.Header, len(bundleDetailed))
+	for i, d := range bundleDetailed {
+		bundleHeaders[i] = d.Header
+	}
+
+	commitments := buildCommitments(bundleDetailed, targetAddresses)
 
 	bundle := proof.HeaderBundle{
 		Version:        proof.WireVersion,
 		ChainID:        anchor.ChainIdentifier,
 		ClaimedGenesis: anchor.HeaderHash,
 		Headers:        bundleHeaders,
+		Commitments:    commitments,
 	}
 	if err := writeJSON(*out, bundle); err != nil {
 		return fmt.Errorf("write bundle: %w", err)
@@ -160,7 +173,75 @@ func run(args []string) error {
 	fmt.Fprintf(os.Stderr, "OK: anchor height=%d hash=%s\n", anchor.Height, hex.EncodeToString(anchor.HeaderHash[:]))
 	fmt.Fprintf(os.Stderr, "OK: bundle heights=[%d..%d] count=%d\n",
 		bundleHeaders[0].Height, bundleHeaders[len(bundleHeaders)-1].Height, len(bundleHeaders))
+	if len(commitments) > 0 || len(targetAddresses) > 0 {
+		fmt.Fprintf(os.Stderr, "OK: commitments=%d (targets=%d)\n", len(commitments), len(targetAddresses))
+	}
 	return nil
+}
+
+// decodeTargetAddresses parses --commitments flag input. Empty input
+// is allowed and disables commitment emission entirely.
+func decodeTargetAddresses(s string) ([]chain.Address, error) {
+	if strings.TrimSpace(s) == "" {
+		return nil, nil
+	}
+	parts := strings.Split(s, ",")
+	out := make([]chain.Address, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		raw, err := fetch.DecodeZenonAddress(p)
+		if err != nil {
+			return nil, fmt.Errorf("address %q: %w", p, err)
+		}
+		out = append(out, chain.Address(raw))
+	}
+	return out, nil
+}
+
+// buildCommitments emits a CommitmentEvidence for every (target, momentum)
+// pair where the target address has at least one AccountHeader in the
+// momentum's content. The full sorted Content slice is attached as
+// FlatContentEvidence — bandwidth O(m), per the spec-vs-impl Merkle
+// gap documented in zenon-spv-vault/notes/account-block-merkle-paths.md.
+func buildCommitments(details []fetch.DetailedHeader, targets []chain.Address) []proof.CommitmentEvidence {
+	if len(targets) == 0 {
+		return nil
+	}
+	targetSet := make(map[chain.Address]struct{}, len(targets))
+	for _, a := range targets {
+		targetSet[a] = struct{}{}
+	}
+	var out []proof.CommitmentEvidence
+	for _, d := range details {
+		if len(d.Content) == 0 {
+			continue
+		}
+		// Find every AccountHeader whose Address matches a target.
+		// One CommitmentEvidence per match; FlatContentEvidence is
+		// shared content but the Target differs per emitted evidence.
+		var matches []chain.AccountHeader
+		for _, ah := range d.Content {
+			if _, ok := targetSet[ah.Address]; ok {
+				matches = append(matches, ah)
+			}
+		}
+		if len(matches) == 0 {
+			continue
+		}
+		sortedCopy := append([]chain.AccountHeader{}, d.Content...)
+		flat := &proof.FlatContentEvidence{SortedHeaders: sortedCopy}
+		for _, m := range matches {
+			out = append(out, proof.CommitmentEvidence{
+				Height: d.Header.Height,
+				Target: m,
+				Flat:   flat,
+			})
+		}
+	}
+	return out
 }
 
 func splitPeers(s string) []string {
