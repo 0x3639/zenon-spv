@@ -44,9 +44,12 @@ These are *known* and *documented*, not bugs:
    validator or quorum signatures") and will land with the consensus-
    shadowing work.
 
-2. **Mainnet genesis trust root is not embedded.** Genesis must be
-   supplied via `--genesis-config` or `ZENON_SPV_GENESIS_HASH`. A
-   follow-up ADR (`0002-genesis-trust-anchor.md`) will track resolution.
+2. **Mainnet genesis trust root is embedded but single-sourced.** The
+   embedded hash recomputes from the signed envelope of the genesis
+   Momentum, but was originally fetched from a single peer
+   (https://my.hc1node.com:35997, 2026-04-28). Cross-checking against
+   independent operators is a follow-up; see
+   `zenon-spv-vault/decisions/0002-genesis-trust-anchor.md`.
 
 3. **`ChangesHash` is opaque.** Verified-as-bound but not independently
    recomputed; an SPV cannot recompute state-transition hashes without

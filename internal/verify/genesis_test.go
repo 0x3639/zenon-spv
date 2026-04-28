@@ -1,16 +1,29 @@
 package verify
 
 import (
-	"errors"
+	"encoding/hex"
 	"os"
 	"path/filepath"
 	"testing"
 )
 
-func TestMainnetGenesis_NotConfigured(t *testing.T) {
-	_, err := MainnetGenesis()
-	if !errors.Is(err, ErrGenesisNotConfigured) {
-		t.Fatalf("expected ErrGenesisNotConfigured, got %v", err)
+func TestMainnetGenesis(t *testing.T) {
+	g, err := MainnetGenesis()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if g.ChainID != MainnetChainID {
+		t.Errorf("chain_id: got %d, want %d", g.ChainID, MainnetChainID)
+	}
+	if g.Height != MainnetHeight {
+		t.Errorf("height: got %d, want %d", g.Height, MainnetHeight)
+	}
+	const wantHash = "9e204601d1b7b1427fe12bc82622e610d8a6ad43c40abf020eb66e538bb8eeb0"
+	if got := hex.EncodeToString(g.HeaderHash[:]); got != wantHash {
+		t.Errorf("header_hash: got %s, want %s", got, wantHash)
+	}
+	if g.HeaderHash.IsZero() {
+		t.Fatal("embedded mainnet hash must not be zero")
 	}
 }
 

@@ -10,7 +10,7 @@ Pre-alpha. Phase 1 scope: header-chain verifier MVP. No commitment proofs, no tr
 
 ## What it does
 
-- Anchors to a configured genesis trust root.
+- Anchors to the embedded mainnet genesis trust root (overrideable via `--genesis-config` for testnet/devnet).
 - Accepts a contiguous range of Momentum headers and returns one of `ACCEPT`, `REJECT`, or `REFUSED` per the refusal semantics in `spec/spv-implementation-guide.md` §4.1.
 - Enforces a policy window `w` (configurable per risk tier per spec §2.3).
 

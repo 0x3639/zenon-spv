@@ -5,6 +5,12 @@
 //	zenon-spv verify-headers <bundle.json> [--window {low|medium|high}]
 //	                                       [--genesis-config <path>]
 //
+// Default genesis is the embedded mainnet trust root
+// (chain_id=1, height=1; see internal/verify/genesis.go and
+// zenon-spv-vault/decisions/0002-genesis-trust-anchor.md). Override
+// with --genesis-config <path> or ZENON_SPV_GENESIS_HASH/CHAIN_ID env
+// vars when verifying testnet/devnet or pinning a different anchor.
+//
 // Exit codes:
 //
 //	0   ACCEPT
@@ -21,7 +27,6 @@ package main
 
 import (
 	"encoding/hex"
-	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -41,9 +46,10 @@ Subcommands:
   verify-headers   Verify a HeaderBundle JSON file. Exits 0 on ACCEPT,
                    1 on REJECT, 2 on REFUSED.
 
-Genesis trust root is loaded from --genesis-config (JSON file) or
-from ZENON_SPV_GENESIS_HASH + ZENON_SPV_CHAIN_ID env vars
-(genesis height defaults to 0 if not given via ZENON_SPV_GENESIS_HEIGHT).
+Genesis trust root defaults to the embedded mainnet anchor. Override
+via --genesis-config (JSON file) or ZENON_SPV_GENESIS_HASH +
+ZENON_SPV_CHAIN_ID env vars when verifying testnet/devnet (genesis
+height defaults to 0 if not given via ZENON_SPV_GENESIS_HEIGHT).
 
 Caveat: ACCEPT means local consistency only (bounded-verification §G1–G3).
 It does not imply finality or global agreement.
@@ -84,9 +90,6 @@ func runVerifyHeaders(args []string) int {
 	genesis, err := loadGenesis(*genesisConfig)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "genesis: %v\n", err)
-		if errors.Is(err, verify.ErrGenesisNotConfigured) {
-			return 64
-		}
 		return 70
 	}
 
@@ -131,7 +134,7 @@ func loadGenesis(path string) (verify.GenesisTrustRoot, error) {
 	hashHex := strings.TrimSpace(os.Getenv("ZENON_SPV_GENESIS_HASH"))
 	chainIDStr := strings.TrimSpace(os.Getenv("ZENON_SPV_CHAIN_ID"))
 	if hashHex == "" || chainIDStr == "" {
-		return verify.GenesisTrustRoot{}, verify.ErrGenesisNotConfigured
+		return verify.MainnetGenesis()
 	}
 	hashHex = strings.TrimPrefix(hashHex, "0x")
 	if len(hashHex) != 2*chain.HashSize {
