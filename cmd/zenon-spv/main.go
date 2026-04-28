@@ -4,12 +4,15 @@
 //
 //	zenon-spv verify-headers     <bundle.json> [--window {low|medium|high}] [--genesis-config <path>]
 //	zenon-spv verify-commitment  <bundle.json> [--window ...] [--genesis-config ...]
+//	zenon-spv verify-segment     <bundle.json> [--window ...] [--genesis-config ...]
 //
 // verify-commitment runs verify-headers first and then validates each
-// CommitmentEvidence in the bundle's `commitments` array. Exit codes
-// reflect the worst per-commitment outcome (REFUSED > REJECT > ACCEPT
-// in severity); a header-level failure short-circuits before any
-// commitment is evaluated.
+// CommitmentEvidence in the bundle's `commitments` array. verify-segment
+// runs verify-headers, verify-commitment, and then validates each
+// AccountSegment's blocks (per-block hash recompute, Ed25519 signature,
+// account-chain linkage, commitment lookup). Exit codes reflect the
+// worst outcome (REJECT > REFUSED > ACCEPT in severity); a header-level
+// failure short-circuits before commitments and segments are evaluated.
 //
 // Default genesis is the embedded mainnet trust root
 // (chain_id=1, height=1; see internal/verify/genesis.go and
@@ -48,6 +51,7 @@ const usage = `zenon-spv — resource-bounded Zenon SPV verifier
 Usage:
   zenon-spv verify-headers     <bundle.json> [--window {low|medium|high}] [--genesis-config <path>]
   zenon-spv verify-commitment  <bundle.json> [--window ...] [--genesis-config ...]
+  zenon-spv verify-segment     <bundle.json> [--window ...] [--genesis-config ...]
 
 Subcommands:
   verify-headers      Verify a HeaderBundle JSON file. Exits 0 on ACCEPT,
@@ -58,6 +62,12 @@ Subcommands:
                       Exits 0 only if all commitments ACCEPT; 1 on any
                       REJECT (including a header-level REJECT); 2 on
                       any REFUSED.
+
+  verify-segment      Verify the bundle's headers and commitments, then
+                      verify each block in every AccountSegment (hash
+                      recompute, Ed25519 signature, account-chain
+                      linkage, commitment lookup). Exit codes follow
+                      the worst-block-wins convention.
 
 Genesis trust root defaults to the embedded mainnet anchor. Override
 via --genesis-config (JSON file) or ZENON_SPV_GENESIS_HASH +
@@ -78,6 +88,8 @@ func main() {
 		os.Exit(runVerifyHeaders(os.Args[2:]))
 	case "verify-commitment":
 		os.Exit(runVerifyCommitment(os.Args[2:]))
+	case "verify-segment":
+		os.Exit(runVerifySegment(os.Args[2:]))
 	case "-h", "--help", "help":
 		fmt.Print(usage)
 		os.Exit(0)
@@ -213,6 +225,90 @@ func runVerifyHeaders(args []string) int {
 	fmt.Println(result)
 
 	switch result.Outcome {
+	case verify.OutcomeAccept:
+		return 0
+	case verify.OutcomeReject:
+		return 1
+	case verify.OutcomeRefused:
+		return 2
+	default:
+		return 70
+	}
+}
+
+func runVerifySegment(args []string) int {
+	fs := flag.NewFlagSet("verify-segment", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+	tier := fs.String("window", "low", "policy window tier: low | medium | high")
+	genesisConfig := fs.String("genesis-config", "", "path to genesis trust root JSON file (overrides env)")
+	if err := fs.Parse(args); err != nil {
+		return 64
+	}
+	if fs.NArg() != 1 {
+		fmt.Fprintln(os.Stderr, "verify-segment: expected exactly one bundle path")
+		fs.Usage()
+		return 64
+	}
+	bundlePath := fs.Arg(0)
+
+	genesis, err := loadGenesis(*genesisConfig)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "genesis: %v\n", err)
+		return 70
+	}
+	bundle, err := proof.LoadHeaderBundle(bundlePath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "bundle: %v\n", err)
+		return 70
+	}
+	if bundle.ChainID != genesis.ChainID {
+		fmt.Printf("REJECT %s bundle chain_id=%d != trust-root chain_id=%d\n",
+			verify.ReasonChainIDMismatch, bundle.ChainID, genesis.ChainID)
+		return 1
+	}
+	if bundle.ClaimedGenesis != genesis.HeaderHash {
+		fmt.Printf("REJECT %s claimed_genesis=%x != trust-root=%x\n",
+			verify.ReasonGenesisMismatch, bundle.ClaimedGenesis, genesis.HeaderHash)
+		return 1
+	}
+
+	policy := verify.PolicyForTier(*tier)
+	state := verify.NewHeaderState(genesis, policy)
+	headerResult, newState := verify.VerifyHeaders(bundle.Headers, state, policy)
+	fmt.Printf("headers: %s\n", headerResult)
+	if headerResult.Outcome != verify.OutcomeAccept {
+		switch headerResult.Outcome {
+		case verify.OutcomeReject:
+			return 1
+		case verify.OutcomeRefused:
+			return 2
+		default:
+			return 70
+		}
+	}
+
+	if len(bundle.Segments) == 0 {
+		fmt.Println("segments: REFUSED ReasonMissingEvidence (no segments in bundle)")
+		return 2
+	}
+
+	worst := verify.OutcomeAccept
+	for si, seg := range bundle.Segments {
+		segRes := verify.VerifySegment(newState, seg, bundle.Commitments)
+		fmt.Printf("segment[%d] address=%x blocks=%d:\n", si, seg.Address, len(seg.Blocks))
+		for bi, r := range segRes.Blocks {
+			fmt.Printf("  block[%d] height=%d: %s\n", bi, seg.Blocks[bi].Height, r)
+		}
+		switch segRes.Worst() {
+		case verify.OutcomeReject:
+			worst = verify.OutcomeReject
+		case verify.OutcomeRefused:
+			if worst != verify.OutcomeReject {
+				worst = verify.OutcomeRefused
+			}
+		}
+	}
+	switch worst {
 	case verify.OutcomeAccept:
 		return 0
 	case verify.OutcomeReject:

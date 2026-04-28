@@ -21,6 +21,30 @@ type HeaderBundle struct {
 	ClaimedGenesis chain.Hash           `json:"claimed_genesis"`
 	Headers        []chain.Header       `json:"headers"`
 	Commitments    []CommitmentEvidence `json:"commitments,omitempty"`
+	Segments       []AccountSegment     `json:"segments,omitempty"`
+}
+
+// AccountSegment is a contiguous range of AccountBlocks for a single
+// account, attesting that those blocks form a valid sub-chain whose
+// per-block AccountHeaders are committed under the bundle's
+// authenticated Headers via the bundle's Commitments.
+//
+// Defined per ADR 0001. Verifier in internal/verify/segment.go runs:
+//
+//   1. Per-block: recompute ComputeHash, verify Ed25519 signature.
+//   2. Account-chain linkage: PreviousHash + Height monotonicity.
+//   3. Per-block: look up the matching CommitmentEvidence in
+//      HeaderBundle.Commitments and run VerifyCommitment.
+//
+// Caveat (per bounded-verification §G1, NG1, NG2): ACCEPT proves
+// that THIS sequence of (address, height, hash) triples was committed
+// by the producer's signature on the corresponding momentum. It does
+// NOT prove the underlying state transitions executed correctly
+// (NG1) or that this is the only block at that (address, height) on
+// the canonical chain (NG6). Effect-equivalence only.
+type AccountSegment struct {
+	Address chain.Address        `json:"address"`
+	Blocks  []chain.AccountBlock `json:"blocks"`
 }
 
 // CommitmentEvidence attests that Target was committed under the

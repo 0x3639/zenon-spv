@@ -42,6 +42,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -70,6 +71,7 @@ func run(args []string) error {
 	checkpointPath := fs.String("checkpoint", "", "if set, write the trust-anchor checkpoint to this path")
 	timeout := fs.Duration("timeout", 30*time.Second, "RPC timeout (per peer)")
 	commitmentsFlag := fs.String("commitments", "", "comma-separated z1... addresses to attest in the bundle window (also retains parsed Content slices)")
+	segmentsFlag := fs.String("segments", "", "comma-separated z1ADDR:HEIGHT or z1ADDR:START-END specs; fetched account blocks become AccountSegments and their addresses are auto-added to commitments")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -89,6 +91,17 @@ func run(args []string) error {
 	targetAddresses, err := decodeTargetAddresses(*commitmentsFlag)
 	if err != nil {
 		return err
+	}
+	segmentSpecs, err := parseSegmentSpecs(*segmentsFlag)
+	if err != nil {
+		return err
+	}
+	// Segments imply commitment targets: the verifier needs the
+	// AccountHeader of every block in a segment to be committed.
+	for _, s := range segmentSpecs {
+		if !containsAddress(targetAddresses, s.address) {
+			targetAddresses = append(targetAddresses, s.address)
+		}
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
@@ -143,12 +156,18 @@ func run(args []string) error {
 
 	commitments := buildCommitments(bundleDetailed, targetAddresses)
 
+	segments, err := fetchSegments(ctx, urls, multi, *rpcURL, *quorum, segmentSpecs)
+	if err != nil {
+		return fmt.Errorf("fetch segments: %w", err)
+	}
+
 	bundle := proof.HeaderBundle{
 		Version:        proof.WireVersion,
 		ChainID:        anchor.ChainIdentifier,
 		ClaimedGenesis: anchor.HeaderHash,
 		Headers:        bundleHeaders,
 		Commitments:    commitments,
+		Segments:       segments,
 	}
 	if err := writeJSON(*out, bundle); err != nil {
 		return fmt.Errorf("write bundle: %w", err)
@@ -176,7 +195,114 @@ func run(args []string) error {
 	if len(commitments) > 0 || len(targetAddresses) > 0 {
 		fmt.Fprintf(os.Stderr, "OK: commitments=%d (targets=%d)\n", len(commitments), len(targetAddresses))
 	}
+	if len(segments) > 0 {
+		var totalBlocks int
+		for _, s := range segments {
+			totalBlocks += len(s.Blocks)
+		}
+		fmt.Fprintf(os.Stderr, "OK: segments=%d (blocks=%d)\n", len(segments), totalBlocks)
+	}
 	return nil
+}
+
+// segmentSpec captures a parsed --segments entry.
+type segmentSpec struct {
+	addressBech32 string
+	address       chain.Address
+	startHeight   uint64
+	count         uint64
+}
+
+func parseSegmentSpecs(s string) ([]segmentSpec, error) {
+	if strings.TrimSpace(s) == "" {
+		return nil, nil
+	}
+	parts := strings.Split(s, ",")
+	out := make([]segmentSpec, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		colon := strings.Index(p, ":")
+		if colon < 0 {
+			return nil, fmt.Errorf("--segments: missing ':' in %q (want ADDR:HEIGHT or ADDR:START-END)", p)
+		}
+		addrStr := p[:colon]
+		rangeStr := p[colon+1:]
+		raw, err := fetch.DecodeZenonAddress(addrStr)
+		if err != nil {
+			return nil, fmt.Errorf("--segments: address %q: %w", addrStr, err)
+		}
+		var start, count uint64
+		if dash := strings.Index(rangeStr, "-"); dash >= 0 {
+			s1, err := strconv.ParseUint(strings.TrimSpace(rangeStr[:dash]), 10, 64)
+			if err != nil {
+				return nil, fmt.Errorf("--segments: start in %q: %w", p, err)
+			}
+			s2, err := strconv.ParseUint(strings.TrimSpace(rangeStr[dash+1:]), 10, 64)
+			if err != nil {
+				return nil, fmt.Errorf("--segments: end in %q: %w", p, err)
+			}
+			if s2 < s1 {
+				return nil, fmt.Errorf("--segments: end %d < start %d in %q", s2, s1, p)
+			}
+			start = s1
+			count = s2 - s1 + 1
+		} else {
+			h, err := strconv.ParseUint(strings.TrimSpace(rangeStr), 10, 64)
+			if err != nil {
+				return nil, fmt.Errorf("--segments: height in %q: %w", p, err)
+			}
+			start = h
+			count = 1
+		}
+		out = append(out, segmentSpec{
+			addressBech32: addrStr,
+			address:       chain.Address(raw),
+			startHeight:   start,
+			count:         count,
+		})
+	}
+	return out, nil
+}
+
+func containsAddress(set []chain.Address, a chain.Address) bool {
+	for _, x := range set {
+		if x == a {
+			return true
+		}
+	}
+	return false
+}
+
+func fetchSegments(ctx context.Context, peers []string, multi bool, singleRPC string, quorum int, specs []segmentSpec) ([]proof.AccountSegment, error) {
+	if len(specs) == 0 {
+		return nil, nil
+	}
+	out := make([]proof.AccountSegment, 0, len(specs))
+	for _, spec := range specs {
+		var blocks []chain.AccountBlock
+		var err error
+		if multi {
+			mc := fetch.NewMultiClient(peers)
+			if quorum > 0 {
+				mc.Quorum = quorum
+			}
+			blocks, err = mc.FetchAccountBlocksByHeight(ctx, spec.addressBech32, spec.startHeight, spec.count)
+		} else {
+			c := fetch.NewClient(singleRPC)
+			blocks, err = c.FetchAccountBlocksByHeight(ctx, spec.addressBech32, spec.startHeight, spec.count)
+		}
+		if err != nil {
+			return nil, fmt.Errorf("address %s: %w", spec.addressBech32, err)
+		}
+		out = append(out, proof.AccountSegment{
+			Address: spec.address,
+			Blocks:  blocks,
+		})
+	}
+	return out, nil
 }
 
 // decodeTargetAddresses parses --commitments flag input. Empty input

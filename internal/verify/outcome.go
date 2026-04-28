@@ -49,6 +49,7 @@ const (
 	ReasonNotMember          // Phase 2: target AccountHeader not present in evidence
 	ReasonHeightOutOfWindow  // Phase 2: commitment height not in retained window
 	ReasonMissingProof       // Phase 2: no Flat or Merkle proof attached
+	ReasonAddressMismatch // Phase 3: block.Address != segment.Address
 )
 
 // String returns a stable, snake-case-equivalent name for serialization.
@@ -84,6 +85,8 @@ func (r ReasonCode) String() string {
 		return "ReasonHeightOutOfWindow"
 	case ReasonMissingProof:
 		return "ReasonMissingProof"
+	case ReasonAddressMismatch:
+		return "ReasonAddressMismatch"
 	default:
 		return fmt.Sprintf("ReasonCode(%d)", int(r))
 	}

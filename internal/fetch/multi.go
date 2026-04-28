@@ -217,6 +217,69 @@ func reconcileDetailed(results []peerDetailedResult, q int) ([]DetailedHeader, e
 	return pin.detailed, nil
 }
 
+// FetchAccountBlocksByHeight fans the request to all peers and
+// returns the slice only if at least Quorum peers agree on every
+// block hash. Disagreement → ErrPeerDisagreement.
+func (m *MultiClient) FetchAccountBlocksByHeight(ctx context.Context, addressBech32 string, start, count uint64) ([]chain.AccountBlock, error) {
+	if len(m.Peers) == 0 {
+		return nil, errors.New("multi: no peers configured")
+	}
+	q := m.Quorum
+	if q < 1 {
+		q = len(m.Peers)
+	}
+	if q > len(m.Peers) {
+		return nil, fmt.Errorf("multi: quorum %d > peers %d", q, len(m.Peers))
+	}
+
+	type peerBlocksResult struct {
+		url    string
+		blocks []chain.AccountBlock
+		err    error
+	}
+	results := make([]peerBlocksResult, len(m.Peers))
+	var wg sync.WaitGroup
+	for i, p := range m.Peers {
+		wg.Add(1)
+		go func(i int, p *Client) {
+			defer wg.Done()
+			b, err := p.FetchAccountBlocksByHeight(ctx, addressBech32, start, count)
+			results[i] = peerBlocksResult{url: p.URL, blocks: b, err: err}
+		}(i, p)
+	}
+	wg.Wait()
+
+	good := results[:0]
+	var firstErrs []string
+	for _, r := range results {
+		if r.err != nil {
+			firstErrs = append(firstErrs, fmt.Sprintf("  %s: %v", r.url, r.err))
+			continue
+		}
+		good = append(good, r)
+	}
+	if len(good) < q {
+		return nil, fmt.Errorf("%w: %d/%d peers usable; errors:\n%s",
+			ErrNotEnoughPeers, len(good), q, strings.Join(firstErrs, "\n"))
+	}
+	pin := good[0]
+	for _, r := range good[1:] {
+		if len(r.blocks) != len(pin.blocks) {
+			return nil, fmt.Errorf("%w: %s returned %d blocks, %s returned %d",
+				ErrPeerDisagreement, r.url, len(r.blocks), pin.url, len(pin.blocks))
+		}
+		for i := range pin.blocks {
+			if r.blocks[i].BlockHash != pin.blocks[i].BlockHash {
+				return nil, fmt.Errorf("%w: at height %d, %s hash=%x vs %s hash=%x",
+					ErrPeerDisagreement, pin.blocks[i].Height,
+					r.url, r.blocks[i].BlockHash,
+					pin.url, pin.blocks[i].BlockHash)
+			}
+		}
+	}
+	return pin.blocks, nil
+}
+
 // reconcileByHeight collects per-peer slices, requires at least q
 // peers returned a usable slice, and requires every (height, hash)
 // pair to be identical across those peers. Any disagreement is fatal.
