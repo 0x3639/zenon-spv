@@ -22,6 +22,6 @@ jobs:
       - name: Test
         run: go test -race -coverprofile=coverage.out ./...
       - name: Lint
-        uses: golangci/golangci-lint-action@v6
+        uses: golangci/golangci-lint-action@v7
         with:
           version: v2.6.2
