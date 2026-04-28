@@ -13,6 +13,7 @@ help:
 
 build:
 	go build -o zenon-spv ./cmd/zenon-spv
+	go build -o fetch-bundle ./cmd/fetch-bundle
 
 test:
 	go test ./...
@@ -34,4 +35,4 @@ fixtures:
 	go run ./internal/testdata/genfixtures.go
 
 clean:
-	rm -f zenon-spv coverage.out coverage.html
+	rm -f zenon-spv fetch-bundle coverage.out coverage.html
