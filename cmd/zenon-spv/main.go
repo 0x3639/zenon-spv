@@ -5,6 +5,14 @@
 //	zenon-spv verify-headers     <bundle.json> [--window {low|medium|high}] [--genesis-config <path>] [--state <path>]
 //	zenon-spv verify-commitment  <bundle.json> [--window ...] [--genesis-config ...] [--state <path>]
 //	zenon-spv verify-segment     <bundle.json> [--window ...] [--genesis-config ...] [--state <path>]
+//	zenon-spv watch              [--peers <urls>|--rpc <url>] --state <path> [--genesis-config ...] [--window ...] [--interval <dur>] [--safety-margin <n>] [--batch-size <n>] [--quorum <k>]
+//
+// watch turns the verifier into a stateful service: load (or
+// initialize via prior verify-* run) state, then tick at --interval,
+// multi-peer-fetching new momentums and verifying them with k-of-n
+// redundancy. State persists after each ACCEPT; REJECT and REFUSED
+// leave state untouched. Exits 0 on graceful shutdown
+// (SIGINT/SIGTERM), 70 on unrecoverable startup error.
 //
 // --state <path> turns the verifier into a stateful service: if the
 // file exists, the verifier extends from the persisted retained
@@ -46,14 +54,19 @@
 package main
 
 import (
+	"context"
 	"encoding/hex"
 	"flag"
 	"fmt"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 
 	"github.com/0x3639/zenon-spv/internal/chain"
+	"github.com/0x3639/zenon-spv/internal/fetch"
 	"github.com/0x3639/zenon-spv/internal/proof"
+	"github.com/0x3639/zenon-spv/internal/syncer"
 	"github.com/0x3639/zenon-spv/internal/verify"
 )
 
@@ -63,6 +76,8 @@ Usage:
   zenon-spv verify-headers     <bundle.json> [--window {low|medium|high}] [--genesis-config <path>] [--state <path>]
   zenon-spv verify-commitment  <bundle.json> [--window ...] [--genesis-config ...] [--state <path>]
   zenon-spv verify-segment     <bundle.json> [--window ...] [--genesis-config ...] [--state <path>]
+  zenon-spv watch              [--peers <urls>|--rpc <url>] --state <path> [--genesis-config ...]
+                               [--window ...] [--interval <dur>] [--safety-margin <n>] [--batch-size <n>] [--quorum <k>]
 
 Subcommands:
   verify-headers      Verify a HeaderBundle JSON file. Exits 0 on ACCEPT,
@@ -79,6 +94,11 @@ Subcommands:
                       recompute, Ed25519 signature, account-chain
                       linkage, commitment lookup). Exit codes follow
                       the worst-block-wins convention.
+
+  watch               Run as a stateful service. Tick at --interval
+                      (default 10s), multi-peer-fetch new momentums,
+                      verify and persist. SIGINT/SIGTERM for graceful
+                      shutdown.
 
 Genesis trust root defaults to the embedded mainnet anchor. Override
 via --genesis-config (JSON file) or ZENON_SPV_GENESIS_HASH +
@@ -101,6 +121,8 @@ func main() {
 		os.Exit(runVerifyCommitment(os.Args[2:]))
 	case "verify-segment":
 		os.Exit(runVerifySegment(os.Args[2:]))
+	case "watch":
+		os.Exit(runWatch(os.Args[2:]))
 	case "-h", "--help", "help":
 		fmt.Print(usage)
 		os.Exit(0)
@@ -297,6 +319,82 @@ func persistIfRequested(path string, state verify.HeaderState) error {
 		return nil
 	}
 	return verify.SaveHeaderState(path, state)
+}
+
+// runWatch is the watch-mode entry point. Runs until SIGINT/SIGTERM.
+func runWatch(args []string) int {
+	fs := flag.NewFlagSet("watch", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+	rpcURL := fs.String("rpc", os.Getenv("ZENON_SPV_RPC"), "single-peer RPC URL (or set ZENON_SPV_RPC)")
+	peersFlag := fs.String("peers", os.Getenv("ZENON_SPV_PEERS"), "comma-separated peer URLs (or set ZENON_SPV_PEERS)")
+	quorum := fs.Int("quorum", 0, "minimum agreeing peers; 0 = require unanimous (len(peers))")
+	tier := fs.String("window", "low", "policy window tier: low | medium | high")
+	genesisConfig := fs.String("genesis-config", "", "path to genesis trust root JSON file (overrides env)")
+	statePath := fs.String("state", "", "path to persisted HeaderState (required)")
+	interval := fs.Duration("interval", syncer.DefaultInterval, "tick interval between iterations")
+	safetyMargin := fs.Uint64("safety-margin", syncer.DefaultSafetyMargin, "drop this many heights below min(frontier) per tick")
+	batchSize := fs.Uint64("batch-size", syncer.DefaultBatchSize, "max headers to fetch per tick (0 = no cap)")
+	if err := fs.Parse(args); err != nil {
+		return 64
+	}
+	if *statePath == "" {
+		fmt.Fprintln(os.Stderr, "watch: --state <path> is required (the loop must persist on every ACCEPT)")
+		return 64
+	}
+
+	urls := splitWatchPeers(*peersFlag)
+	if len(urls) == 0 && *rpcURL != "" {
+		urls = []string{*rpcURL}
+	}
+	if len(urls) == 0 {
+		fmt.Fprintln(os.Stderr, "watch: --peers or --rpc required (or set ZENON_SPV_PEERS / ZENON_SPV_RPC)")
+		return 64
+	}
+	multi := fetch.NewMultiClient(urls)
+	if *quorum > 0 {
+		multi.Quorum = *quorum
+	}
+
+	genesis, err := loadGenesis(*genesisConfig)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "genesis: %v\n", err)
+		return 70
+	}
+	policy := verify.PolicyForTier(*tier)
+
+	loop := &syncer.Loop{
+		Multi:        multi,
+		StatePath:    *statePath,
+		Genesis:      genesis,
+		Policy:       policy,
+		Interval:     *interval,
+		SafetyMargin: *safetyMargin,
+		BatchSize:    *batchSize,
+		Out:          os.Stderr,
+	}
+
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
+	if err := loop.Run(ctx); err != nil {
+		fmt.Fprintf(os.Stderr, "watch: %v\n", err)
+		return 70
+	}
+	return 0
+}
+
+func splitWatchPeers(s string) []string {
+	if s == "" {
+		return nil
+	}
+	parts := strings.Split(s, ",")
+	out := parts[:0]
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 // outcomeExitCode maps an Outcome to the documented exit-code matrix:
