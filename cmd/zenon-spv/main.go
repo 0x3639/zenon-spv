@@ -2,9 +2,20 @@
 //
 // Subcommands:
 //
-//	zenon-spv verify-headers     <bundle.json> [--window {low|medium|high}] [--genesis-config <path>]
-//	zenon-spv verify-commitment  <bundle.json> [--window ...] [--genesis-config ...]
-//	zenon-spv verify-segment     <bundle.json> [--window ...] [--genesis-config ...]
+//	zenon-spv verify-headers     <bundle.json> [--window {low|medium|high}] [--genesis-config <path>] [--state <path>]
+//	zenon-spv verify-commitment  <bundle.json> [--window ...] [--genesis-config ...] [--state <path>]
+//	zenon-spv verify-segment     <bundle.json> [--window ...] [--genesis-config ...] [--state <path>]
+//
+// --state <path> turns the verifier into a stateful service: if the
+// file exists, the verifier extends from the persisted retained
+// window's tip; if missing, it initializes from the configured
+// genesis trust root and persists after a successful ACCEPT.
+// On REJECT or REFUSED, the state file is unchanged.
+//
+// On resume (state file loaded), the bundle's claimed_genesis field
+// is informational — the persisted state's genesis is authoritative.
+// On a fresh start, claimed_genesis must match the configured trust
+// root or REJECT/GenesisMismatch.
 //
 // verify-commitment runs verify-headers first and then validates each
 // CommitmentEvidence in the bundle's `commitments` array. verify-segment
@@ -49,9 +60,9 @@ import (
 const usage = `zenon-spv — resource-bounded Zenon SPV verifier
 
 Usage:
-  zenon-spv verify-headers     <bundle.json> [--window {low|medium|high}] [--genesis-config <path>]
-  zenon-spv verify-commitment  <bundle.json> [--window ...] [--genesis-config ...]
-  zenon-spv verify-segment     <bundle.json> [--window ...] [--genesis-config ...]
+  zenon-spv verify-headers     <bundle.json> [--window {low|medium|high}] [--genesis-config <path>] [--state <path>]
+  zenon-spv verify-commitment  <bundle.json> [--window ...] [--genesis-config ...] [--state <path>]
+  zenon-spv verify-segment     <bundle.json> [--window ...] [--genesis-config ...] [--state <path>]
 
 Subcommands:
   verify-headers      Verify a HeaderBundle JSON file. Exits 0 on ACCEPT,
@@ -100,65 +111,25 @@ func main() {
 }
 
 func runVerifyCommitment(args []string) int {
-	fs := flag.NewFlagSet("verify-commitment", flag.ContinueOnError)
-	fs.SetOutput(os.Stderr)
-	tier := fs.String("window", "low", "policy window tier: low | medium | high")
-	genesisConfig := fs.String("genesis-config", "", "path to genesis trust root JSON file (overrides env)")
-	if err := fs.Parse(args); err != nil {
-		return 64
+	ctx, code := prepareVerifierContext("verify-commitment", args)
+	if code != 0 {
+		return code
 	}
-	if fs.NArg() != 1 {
-		fmt.Fprintln(os.Stderr, "verify-commitment: expected exactly one bundle path")
-		fs.Usage()
-		return 64
-	}
-	bundlePath := fs.Arg(0)
-
-	genesis, err := loadGenesis(*genesisConfig)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "genesis: %v\n", err)
-		return 70
-	}
-	bundle, err := proof.LoadHeaderBundle(bundlePath)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "bundle: %v\n", err)
-		return 70
-	}
-	if bundle.ChainID != genesis.ChainID {
-		fmt.Printf("REJECT %s bundle chain_id=%d != trust-root chain_id=%d\n",
-			verify.ReasonChainIDMismatch, bundle.ChainID, genesis.ChainID)
-		return 1
-	}
-	if bundle.ClaimedGenesis != genesis.HeaderHash {
-		fmt.Printf("REJECT %s claimed_genesis=%x != trust-root=%x\n",
-			verify.ReasonGenesisMismatch, bundle.ClaimedGenesis, genesis.HeaderHash)
-		return 1
-	}
-
-	policy := verify.PolicyForTier(*tier)
-	state := verify.NewHeaderState(genesis, policy)
-	headerResult, newState := verify.VerifyHeaders(bundle.Headers, state, policy)
+	headerResult, newState := verify.VerifyHeaders(ctx.bundle.Headers, ctx.state, ctx.policy)
 	fmt.Printf("headers: %s\n", headerResult)
 	if headerResult.Outcome != verify.OutcomeAccept {
-		switch headerResult.Outcome {
-		case verify.OutcomeReject:
-			return 1
-		case verify.OutcomeRefused:
-			return 2
-		default:
-			return 70
-		}
+		return outcomeExitCode(headerResult.Outcome)
 	}
 
-	if len(bundle.Commitments) == 0 {
+	if len(ctx.bundle.Commitments) == 0 {
 		fmt.Println("commitments: REFUSED ReasonMissingEvidence (no commitments in bundle)")
 		return 2
 	}
 
-	results := verify.VerifyCommitments(newState, bundle.Commitments)
+	results := verify.VerifyCommitments(newState, ctx.bundle.Commitments)
 	worst := verify.OutcomeAccept
 	for i, r := range results {
-		c := bundle.Commitments[i]
+		c := ctx.bundle.Commitments[i]
 		fmt.Printf("commitment[%d] height=%d addr=%x: %s\n", i, c.Height, c.Target.Address, r)
 		switch r.Outcome {
 		case verify.OutcomeRefused:
@@ -169,132 +140,50 @@ func runVerifyCommitment(args []string) int {
 			worst = verify.OutcomeReject
 		}
 	}
-	switch worst {
-	case verify.OutcomeAccept:
-		return 0
-	case verify.OutcomeReject:
-		return 1
-	case verify.OutcomeRefused:
-		return 2
-	default:
-		return 70
-	}
-}
-
-func runVerifyHeaders(args []string) int {
-	fs := flag.NewFlagSet("verify-headers", flag.ContinueOnError)
-	fs.SetOutput(os.Stderr)
-	tier := fs.String("window", "low", "policy window tier: low | medium | high")
-	genesisConfig := fs.String("genesis-config", "", "path to genesis trust root JSON file (overrides env)")
-	if err := fs.Parse(args); err != nil {
-		return 64
-	}
-	if fs.NArg() != 1 {
-		fmt.Fprintln(os.Stderr, "verify-headers: expected exactly one bundle path")
-		fs.Usage()
-		return 64
-	}
-	bundlePath := fs.Arg(0)
-
-	genesis, err := loadGenesis(*genesisConfig)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "genesis: %v\n", err)
-		return 70
-	}
-
-	bundle, err := proof.LoadHeaderBundle(bundlePath)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "bundle: %v\n", err)
-		return 70
-	}
-
-	if bundle.ChainID != genesis.ChainID {
-		fmt.Printf("REJECT %s bundle chain_id=%d != trust-root chain_id=%d\n",
-			verify.ReasonChainIDMismatch, bundle.ChainID, genesis.ChainID)
-		return 1
-	}
-	if bundle.ClaimedGenesis != genesis.HeaderHash {
-		fmt.Printf("REJECT %s claimed_genesis=%x != trust-root=%x\n",
-			verify.ReasonGenesisMismatch, bundle.ClaimedGenesis, genesis.HeaderHash)
-		return 1
-	}
-
-	policy := verify.PolicyForTier(*tier)
-	state := verify.NewHeaderState(genesis, policy)
-	result, _ := verify.VerifyHeaders(bundle.Headers, state, policy)
-	fmt.Println(result)
-
-	switch result.Outcome {
-	case verify.OutcomeAccept:
-		return 0
-	case verify.OutcomeReject:
-		return 1
-	case verify.OutcomeRefused:
-		return 2
-	default:
-		return 70
-	}
-}
-
-func runVerifySegment(args []string) int {
-	fs := flag.NewFlagSet("verify-segment", flag.ContinueOnError)
-	fs.SetOutput(os.Stderr)
-	tier := fs.String("window", "low", "policy window tier: low | medium | high")
-	genesisConfig := fs.String("genesis-config", "", "path to genesis trust root JSON file (overrides env)")
-	if err := fs.Parse(args); err != nil {
-		return 64
-	}
-	if fs.NArg() != 1 {
-		fmt.Fprintln(os.Stderr, "verify-segment: expected exactly one bundle path")
-		fs.Usage()
-		return 64
-	}
-	bundlePath := fs.Arg(0)
-
-	genesis, err := loadGenesis(*genesisConfig)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "genesis: %v\n", err)
-		return 70
-	}
-	bundle, err := proof.LoadHeaderBundle(bundlePath)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "bundle: %v\n", err)
-		return 70
-	}
-	if bundle.ChainID != genesis.ChainID {
-		fmt.Printf("REJECT %s bundle chain_id=%d != trust-root chain_id=%d\n",
-			verify.ReasonChainIDMismatch, bundle.ChainID, genesis.ChainID)
-		return 1
-	}
-	if bundle.ClaimedGenesis != genesis.HeaderHash {
-		fmt.Printf("REJECT %s claimed_genesis=%x != trust-root=%x\n",
-			verify.ReasonGenesisMismatch, bundle.ClaimedGenesis, genesis.HeaderHash)
-		return 1
-	}
-
-	policy := verify.PolicyForTier(*tier)
-	state := verify.NewHeaderState(genesis, policy)
-	headerResult, newState := verify.VerifyHeaders(bundle.Headers, state, policy)
-	fmt.Printf("headers: %s\n", headerResult)
-	if headerResult.Outcome != verify.OutcomeAccept {
-		switch headerResult.Outcome {
-		case verify.OutcomeReject:
-			return 1
-		case verify.OutcomeRefused:
-			return 2
-		default:
+	if worst == verify.OutcomeAccept {
+		if err := persistIfRequested(ctx.statePath, newState); err != nil {
+			fmt.Fprintf(os.Stderr, "state: %v\n", err)
 			return 70
 		}
 	}
+	return outcomeExitCode(worst)
+}
 
-	if len(bundle.Segments) == 0 {
+func runVerifyHeaders(args []string) int {
+	ctx, code := prepareVerifierContext("verify-headers", args)
+	if code != 0 {
+		return code
+	}
+	result, newState := verify.VerifyHeaders(ctx.bundle.Headers, ctx.state, ctx.policy)
+	fmt.Println(result)
+	if result.Outcome == verify.OutcomeAccept {
+		if err := persistIfRequested(ctx.statePath, newState); err != nil {
+			fmt.Fprintf(os.Stderr, "state: %v\n", err)
+			return 70
+		}
+	}
+	return outcomeExitCode(result.Outcome)
+}
+
+func runVerifySegment(args []string) int {
+	ctx, code := prepareVerifierContext("verify-segment", args)
+	if code != 0 {
+		return code
+	}
+	headerResult, newState := verify.VerifyHeaders(ctx.bundle.Headers, ctx.state, ctx.policy)
+	fmt.Printf("headers: %s\n", headerResult)
+	if headerResult.Outcome != verify.OutcomeAccept {
+		return outcomeExitCode(headerResult.Outcome)
+	}
+
+	if len(ctx.bundle.Segments) == 0 {
 		fmt.Println("segments: REFUSED ReasonMissingEvidence (no segments in bundle)")
 		return 2
 	}
 
 	worst := verify.OutcomeAccept
-	for si, seg := range bundle.Segments {
-		segRes := verify.VerifySegment(newState, seg, bundle.Commitments)
+	for si, seg := range ctx.bundle.Segments {
+		segRes := verify.VerifySegment(newState, seg, ctx.bundle.Commitments)
 		fmt.Printf("segment[%d] address=%x blocks=%d:\n", si, seg.Address, len(seg.Blocks))
 		for bi, r := range segRes.Blocks {
 			fmt.Printf("  block[%d] height=%d: %s\n", bi, seg.Blocks[bi].Height, r)
@@ -308,7 +197,116 @@ func runVerifySegment(args []string) int {
 			}
 		}
 	}
-	switch worst {
+	if worst == verify.OutcomeAccept {
+		if err := persistIfRequested(ctx.statePath, newState); err != nil {
+			fmt.Fprintf(os.Stderr, "state: %v\n", err)
+			return 70
+		}
+	}
+	return outcomeExitCode(worst)
+}
+
+// verifierContext bundles everything the three verify-* subcommands
+// need from their shared prelude: parsed flags, loaded genesis,
+// loaded bundle, initialized HeaderState (loaded from --state if
+// present), and the active Policy.
+type verifierContext struct {
+	bundle    proof.HeaderBundle
+	state     verify.HeaderState
+	policy    verify.Policy
+	statePath string
+}
+
+// prepareVerifierContext parses common flags, loads the bundle and
+// genesis, runs cross-bundle/trust-root sanity checks, and returns a
+// ready verifierContext or a non-zero exit code on failure. If the
+// returned exitCode is non-zero, the caller should return it
+// directly without further work.
+func prepareVerifierContext(name string, args []string) (verifierContext, int) {
+	fs := flag.NewFlagSet(name, flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+	tier := fs.String("window", "low", "policy window tier: low | medium | high")
+	genesisConfig := fs.String("genesis-config", "", "path to genesis trust root JSON file (overrides env)")
+	statePath := fs.String("state", "", "path to persisted HeaderState; load if present, save after ACCEPT")
+	if err := fs.Parse(args); err != nil {
+		return verifierContext{}, 64
+	}
+	if fs.NArg() != 1 {
+		fmt.Fprintf(os.Stderr, "%s: expected exactly one bundle path\n", name)
+		fs.Usage()
+		return verifierContext{}, 64
+	}
+	bundlePath := fs.Arg(0)
+
+	genesis, err := loadGenesis(*genesisConfig)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "genesis: %v\n", err)
+		return verifierContext{}, 70
+	}
+	bundle, err := proof.LoadHeaderBundle(bundlePath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "bundle: %v\n", err)
+		return verifierContext{}, 70
+	}
+	if bundle.ChainID != genesis.ChainID {
+		fmt.Printf("REJECT %s bundle chain_id=%d != trust-root chain_id=%d\n",
+			verify.ReasonChainIDMismatch, bundle.ChainID, genesis.ChainID)
+		return verifierContext{}, 1
+	}
+
+	policy := verify.PolicyForTier(*tier)
+	resumed := false
+	var state verify.HeaderState
+	if *statePath != "" {
+		// LoadOrInit returns the persisted state if the file exists
+		// (and matches the configured trust root), or a fresh state
+		// otherwise. We only mark resumed=true when an actual file
+		// was loaded with non-empty retained window.
+		s, err := verify.LoadOrInit(*statePath, genesis, policy)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "state: %v\n", err)
+			return verifierContext{}, 70
+		}
+		state = s
+		resumed = !s.Empty()
+	} else {
+		state = verify.NewHeaderState(genesis, policy)
+	}
+
+	// On resume, the persisted state's Genesis is the trust root and
+	// the bundle's claimed_genesis is informational. On a fresh
+	// start, the bundle must declare the same genesis we trust.
+	if !resumed && bundle.ClaimedGenesis != genesis.HeaderHash {
+		fmt.Printf("REJECT %s claimed_genesis=%x != trust-root=%x\n",
+			verify.ReasonGenesisMismatch, bundle.ClaimedGenesis, genesis.HeaderHash)
+		return verifierContext{}, 1
+	}
+
+	return verifierContext{
+		bundle:    bundle,
+		state:     state,
+		policy:    policy,
+		statePath: *statePath,
+	}, 0
+}
+
+// persistIfRequested writes state to path if path is non-empty.
+// A no-op when --state was not set.
+func persistIfRequested(path string, state verify.HeaderState) error {
+	if path == "" {
+		return nil
+	}
+	return verify.SaveHeaderState(path, state)
+}
+
+// outcomeExitCode maps an Outcome to the documented exit-code matrix:
+//
+//	ACCEPT  → 0
+//	REJECT  → 1
+//	REFUSED → 2
+//	other   → 70 (EX_SOFTWARE)
+func outcomeExitCode(o verify.Outcome) int {
+	switch o {
 	case verify.OutcomeAccept:
 		return 0
 	case verify.OutcomeReject:
