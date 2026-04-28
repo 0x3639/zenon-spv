@@ -33,7 +33,7 @@ make lint       # golangci-lint
 make cover      # coverage report
 ```
 
-Requires Go 1.22+.
+Requires Go 1.25+.
 
 ## Layout
 
