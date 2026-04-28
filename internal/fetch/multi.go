@@ -1,6 +1,7 @@
 package fetch
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -124,11 +125,16 @@ func (m *MultiClient) FetchByHeight(ctx context.Context, start, count uint64) ([
 	return reconcileByHeight(results, q)
 }
 
-// FetchFrontierAtAgreedHeight asks each peer for its frontier, picks
-// the conservative agreed height (min - safetyMargin), and then runs
-// FetchByHeight at that height with count=1 to confirm all peers
-// return the same momentum at that height. Useful for "give me the
-// most recent header all peers agree on."
+// FetchFrontierAtAgreedHeight asks each peer for its frontier and
+// picks the conservative agreed target = median(frontier_heights) -
+// safetyMargin. Median (rather than min) prevents a single Byzantine
+// peer reporting an ancient frontier from dragging the target
+// arbitrarily backward — the F1 attack ("frontier drag") that caused
+// the watch loop to silently report "caught up" forever (D1).
+//
+// After picking the target, it runs FetchByHeight(target, 1) which
+// requires Quorum peers to agree on the (height, hash) at that height.
+// Disagreement → ErrPeerDisagreement.
 func (m *MultiClient) FetchFrontierAtAgreedHeight(ctx context.Context, safetyMargin uint64) (chain.Header, error) {
 	if len(m.Peers) == 0 {
 		return chain.Header{}, errors.New("multi: no peers configured")
@@ -150,24 +156,25 @@ func (m *MultiClient) FetchFrontierAtAgreedHeight(ctx context.Context, safetyMar
 	}
 	wg.Wait()
 
-	minHeight := ^uint64(0)
-	have := 0
+	usable := make([]uint64, 0, len(m.Peers))
 	for i, h := range heights {
 		if errs[i] != nil {
 			continue
 		}
-		if h < minHeight {
-			minHeight = h
-		}
-		have++
+		usable = append(usable, h)
 	}
-	if have < m.Quorum {
-		return chain.Header{}, fmt.Errorf("%w: %d/%d peers reached on frontier", ErrNotEnoughPeers, have, len(m.Peers))
+	if len(usable) < m.Quorum {
+		return chain.Header{}, fmt.Errorf("%w: %d/%d peers reached on frontier", ErrNotEnoughPeers, len(usable), len(m.Peers))
 	}
-	if minHeight <= safetyMargin {
-		return chain.Header{}, fmt.Errorf("min frontier height %d <= safetyMargin %d", minHeight, safetyMargin)
+	// Median tolerates up to floor((n-1)/2) Byzantine peers without
+	// dragging the target. Sort in place (caller owns `usable`).
+	sortUint64(usable)
+	medianHeight := usable[len(usable)/2]
+
+	if medianHeight <= safetyMargin {
+		return chain.Header{}, fmt.Errorf("median frontier height %d <= safetyMargin %d", medianHeight, safetyMargin)
 	}
-	target := minHeight - safetyMargin
+	target := medianHeight - safetyMargin
 
 	headers, err := m.FetchByHeight(ctx, target, 1)
 	if err != nil {
@@ -176,10 +183,23 @@ func (m *MultiClient) FetchFrontierAtAgreedHeight(ctx context.Context, safetyMar
 	return headers[0], nil
 }
 
+// sortUint64 is a tiny in-place insertion sort; the slices we sort
+// are bounded by len(Peers), typically ≤ 5, so insertion sort beats
+// the runtime cost of importing sort.
+func sortUint64(s []uint64) {
+	for i := 1; i < len(s); i++ {
+		for j := i; j > 0 && s[j-1] > s[j]; j-- {
+			s[j-1], s[j] = s[j], s[j-1]
+		}
+	}
+}
+
 // reconcileDetailed collects per-peer DetailedHeader slices, requires
 // at least q peers returned a usable slice, and requires every
-// (height, hash) pair to be identical across those peers. Returns
-// the first usable peer's slice (which includes the parsed Content).
+// (Height, HeaderHash, PublicKey, Signature) tuple to be identical
+// across those peers. The PublicKey/Signature inclusion (F3) prevents
+// a peer from substituting an unhashed verifier-consumed field while
+// agreeing on the hash. Returns the first usable peer's slice.
 func reconcileDetailed(results []peerDetailedResult, q int) ([]DetailedHeader, error) {
 	good := results[:0]
 	var firstErrs []string
@@ -211,6 +231,14 @@ func reconcileDetailed(results []peerDetailedResult, q int) ([]DetailedHeader, e
 					ErrPeerDisagreement, pin.detailed[i].Header.Height,
 					r.url, r.detailed[i].Header.HeaderHash,
 					pin.url, pin.detailed[i].Header.HeaderHash)
+			}
+			if !bytes.Equal(r.detailed[i].Header.PublicKey, pin.detailed[i].Header.PublicKey) {
+				return nil, fmt.Errorf("%w: at height %d, %s and %s disagree on public_key",
+					ErrPeerDisagreement, pin.detailed[i].Header.Height, r.url, pin.url)
+			}
+			if !bytes.Equal(r.detailed[i].Header.Signature, pin.detailed[i].Header.Signature) {
+				return nil, fmt.Errorf("%w: at height %d, %s and %s disagree on signature",
+					ErrPeerDisagreement, pin.detailed[i].Header.Height, r.url, pin.url)
 			}
 		}
 	}
@@ -275,14 +303,27 @@ func (m *MultiClient) FetchAccountBlocksByHeight(ctx context.Context, addressBec
 					r.url, r.blocks[i].BlockHash,
 					pin.url, pin.blocks[i].BlockHash)
 			}
+			// F3: account blocks carry pk/sig that ride along the
+			// hash; substitution by a malicious peer is caught here.
+			if !bytes.Equal(r.blocks[i].PublicKey, pin.blocks[i].PublicKey) {
+				return nil, fmt.Errorf("%w: at block height %d, %s and %s disagree on public_key",
+					ErrPeerDisagreement, pin.blocks[i].Height, r.url, pin.url)
+			}
+			if !bytes.Equal(r.blocks[i].Signature, pin.blocks[i].Signature) {
+				return nil, fmt.Errorf("%w: at block height %d, %s and %s disagree on signature",
+					ErrPeerDisagreement, pin.blocks[i].Height, r.url, pin.url)
+			}
 		}
 	}
 	return pin.blocks, nil
 }
 
 // reconcileByHeight collects per-peer slices, requires at least q
-// peers returned a usable slice, and requires every (height, hash)
-// pair to be identical across those peers. Any disagreement is fatal.
+// peers returned a usable slice, and requires every (Height,
+// HeaderHash, PublicKey, Signature) tuple to be identical across
+// those peers. PublicKey/Signature inclusion (F3) prevents a peer
+// from substituting an unhashed verifier-consumed field while still
+// agreeing on the hash. Any disagreement is fatal.
 func reconcileByHeight(results []peerResult, q int) ([]chain.Header, error) {
 	good := results[:0]
 	var firstErrs []string
@@ -298,7 +339,7 @@ func reconcileByHeight(results []peerResult, q int) ([]chain.Header, error) {
 			ErrNotEnoughPeers, len(good), q, strings.Join(firstErrs, "\n"))
 	}
 	// Pin against the first usable peer's slice; require all others
-	// agree on (height, recomputed-hash) at every index.
+	// agree on (Height, HeaderHash, PublicKey, Signature) at every index.
 	pin := good[0]
 	for _, r := range good[1:] {
 		if len(r.headers) != len(pin.headers) {
@@ -316,6 +357,14 @@ func reconcileByHeight(results []peerResult, q int) ([]chain.Header, error) {
 					ErrPeerDisagreement, pin.headers[i].Height,
 					r.url, r.headers[i].HeaderHash,
 					pin.url, pin.headers[i].HeaderHash)
+			}
+			if !bytes.Equal(r.headers[i].PublicKey, pin.headers[i].PublicKey) {
+				return nil, fmt.Errorf("%w: at height %d, %s and %s disagree on public_key",
+					ErrPeerDisagreement, pin.headers[i].Height, r.url, pin.url)
+			}
+			if !bytes.Equal(r.headers[i].Signature, pin.headers[i].Signature) {
+				return nil, fmt.Errorf("%w: at height %d, %s and %s disagree on signature",
+					ErrPeerDisagreement, pin.headers[i].Height, r.url, pin.url)
 			}
 		}
 	}

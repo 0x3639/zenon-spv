@@ -177,6 +177,12 @@ func convertAndVerifyAccountBlock(b rpcAccountBlock) (chain.AccountBlock, error)
 	return out, nil
 }
 
+// parseDecimalBigInt parses an Amount field from the wire as a
+// non-negative decimal *big.Int. Negative values are rejected at the
+// wire boundary (DOC1) — go-zenon's protobuf wire serializes Amount
+// via common.BigIntToBytes which strips the sign, so a negative on
+// the SPV's JSON wire has no consensus-valid representation upstream.
+// Allowing it would surface as silent envelope drift (A1/F7).
 func parseDecimalBigInt(s string) (*big.Int, error) {
 	if s == "" {
 		return new(big.Int), nil
@@ -184,6 +190,9 @@ func parseDecimalBigInt(s string) (*big.Int, error) {
 	v, ok := new(big.Int).SetString(s, 10)
 	if !ok {
 		return nil, fmt.Errorf("invalid decimal big-int %q", s)
+	}
+	if v.Sign() < 0 {
+		return nil, fmt.Errorf("amount must be non-negative, got %q", s)
 	}
 	return v, nil
 }

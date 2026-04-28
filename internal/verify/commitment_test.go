@@ -30,9 +30,13 @@ func commitmentFixture(t *testing.T) (HeaderState, proof.CommitmentEvidence, []c
 	}
 	committedContentHash := flatContentHash(committed)
 
-	headers := make([]chain.Header, 6)
+	// Build 9 contiguous headers; the commitment lands at headers[2]
+	// (height 103). With WindowLow=6 and capacity=W+1=7, the retained
+	// window after 9 appends spans heights 103..109. Tip=109 satisfies
+	// the F2 post-target depth check (109 >= 103 + 6).
+	headers := make([]chain.Header, 9)
 	prev := genesisHash
-	for i := 0; i < 6; i++ {
+	for i := 0; i < 9; i++ {
 		h := chain.Header{
 			Version:         1,
 			ChainIdentifier: chainID,
@@ -69,9 +73,14 @@ func commitmentFixture(t *testing.T) (HeaderState, proof.CommitmentEvidence, []c
 	return newState, evidence, committed
 }
 
+// commitmentFixturePolicy is a small helper for tests that want
+// the policy used in the fixture. The fixture is sized so a
+// commitment at height 103 satisfies tip(109) >= 103 + W=6.
+func commitmentFixturePolicy() Policy { return Policy{W: WindowLow} }
+
 func TestVerifyCommitment_Accept(t *testing.T) {
 	state, evidence, _ := commitmentFixture(t)
-	res := VerifyCommitment(state, evidence)
+	res := VerifyCommitment(state, evidence, commitmentFixturePolicy())
 	if res.Outcome != OutcomeAccept || res.Reason != ReasonOK {
 		t.Fatalf("expected ACCEPT/ReasonOK, got %s", res)
 	}
@@ -80,7 +89,7 @@ func TestVerifyCommitment_Accept(t *testing.T) {
 func TestVerifyCommitment_HeightOutOfWindow(t *testing.T) {
 	state, evidence, _ := commitmentFixture(t)
 	evidence.Height = 9_999_999 // not in retained window
-	res := VerifyCommitment(state, evidence)
+	res := VerifyCommitment(state, evidence, commitmentFixturePolicy())
 	if res.Outcome != OutcomeRefused || res.Reason != ReasonHeightOutOfWindow {
 		t.Fatalf("expected REFUSED/HeightOutOfWindow, got %s", res)
 	}
@@ -89,7 +98,7 @@ func TestVerifyCommitment_HeightOutOfWindow(t *testing.T) {
 func TestVerifyCommitment_MissingProof(t *testing.T) {
 	state, evidence, _ := commitmentFixture(t)
 	evidence.Flat = nil
-	res := VerifyCommitment(state, evidence)
+	res := VerifyCommitment(state, evidence, commitmentFixturePolicy())
 	if res.Outcome != OutcomeRefused || res.Reason != ReasonMissingProof {
 		t.Fatalf("expected REFUSED/MissingProof, got %s", res)
 	}
@@ -102,7 +111,7 @@ func TestVerifyCommitment_InvalidContent(t *testing.T) {
 	tamperedSlice := append([]chain.AccountHeader{}, committed...)
 	tamperedSlice[0].Hash[0] ^= 0xff
 	evidence.Flat = &proof.FlatContentEvidence{SortedHeaders: tamperedSlice}
-	res := VerifyCommitment(state, evidence)
+	res := VerifyCommitment(state, evidence, commitmentFixturePolicy())
 	if res.Outcome != OutcomeReject || res.Reason != ReasonInvalidContent {
 		t.Fatalf("expected REJECT/InvalidContent, got %s", res)
 	}
@@ -116,7 +125,7 @@ func TestVerifyCommitment_NotMember(t *testing.T) {
 		Height:  77,
 		Hash:    chain.Hash{0xfe, 0xed},
 	}
-	res := VerifyCommitment(state, evidence)
+	res := VerifyCommitment(state, evidence, commitmentFixturePolicy())
 	if res.Outcome != OutcomeReject || res.Reason != ReasonNotMember {
 		t.Fatalf("expected REJECT/NotMember, got %s", res)
 	}
@@ -129,7 +138,7 @@ func TestVerifyCommitment_BatchMixed(t *testing.T) {
 	outOfWindow := accept
 	outOfWindow.Height = 9_999_999
 
-	results := VerifyCommitments(state, []proof.CommitmentEvidence{accept, notMember, outOfWindow})
+	results := VerifyCommitments(state, []proof.CommitmentEvidence{accept, notMember, outOfWindow}, commitmentFixturePolicy())
 	if len(results) != 3 {
 		t.Fatalf("expected 3 results, got %d", len(results))
 	}
@@ -143,6 +152,31 @@ func TestVerifyCommitment_BatchMixed(t *testing.T) {
 		t.Errorf("results[2]: %s", results[2])
 	}
 	_ = committed
+}
+
+// TestAttack_CommitmentWithoutPostWindowRefuses demonstrates F2: the
+// spec's "W consecutive verified Momentum headers AFTER height h"
+// must be enforced. With W=6 and the fixture's tip at 109, a
+// commitment at height 105 has only 4 strict-after headers (106-109)
+// and must REFUSE; a commitment at 103 (the oldest retained) has
+// exactly 6 strict-after and must ACCEPT.
+func TestAttack_CommitmentWithoutPostWindowRefuses(t *testing.T) {
+	state, _, committed := commitmentFixture(t)
+	flat := &proof.FlatContentEvidence{SortedHeaders: append([]chain.AccountHeader{}, committed...)}
+	pol := commitmentFixturePolicy()
+
+	// Insufficient depth: tip=109, evidence.Height=105, W=6 → REFUSED.
+	insufficient := proof.CommitmentEvidence{Height: 105, Target: committed[1], Flat: flat}
+	if res := VerifyCommitment(state, insufficient, pol); res.Outcome != OutcomeRefused || res.Reason != ReasonInsufficientFinality {
+		t.Fatalf("F2: commitment with %d headers past target accepted; want REFUSED/InsufficientFinality, got %s",
+			109-105, res)
+	}
+
+	// Sufficient depth: tip=109, evidence.Height=103, W=6 → ACCEPT.
+	sufficient := proof.CommitmentEvidence{Height: 103, Target: committed[1], Flat: flat}
+	if res := VerifyCommitment(state, sufficient, pol); res.Outcome != OutcomeAccept {
+		t.Fatalf("F2: commitment at oldest retained slot rejected; want ACCEPT, got %s", res)
+	}
 }
 
 func TestFlatContentHash_EmptySliceMatchesEmptyHash(t *testing.T) {

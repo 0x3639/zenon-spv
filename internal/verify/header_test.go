@@ -204,21 +204,24 @@ func TestVerifyHeaders_StateUnchangedOnReject(t *testing.T) {
 }
 
 func TestHeaderState_AppendEvictsAtCapacity(t *testing.T) {
+	// Capacity is W+1 per spec §2.3 — the retained window holds the
+	// target plus W headers strictly past it. With W=4, capacity=5.
 	genesis, headers, _ := buildChain(t, 10)
 	policy := Policy{W: 4}
 	state := NewHeaderState(genesis, policy)
 	for _, h := range headers {
 		state.Append(h)
 	}
-	if len(state.RetainedWindow) != 4 {
+	if len(state.RetainedWindow) != 5 {
 		t.Fatalf("capacity violated: %d retained", len(state.RetainedWindow))
 	}
 	tip, ok := state.Tip()
 	if !ok || tip.Height != headers[9].Height {
 		t.Fatalf("tip mismatch: %v", tip)
 	}
-	if state.RetainedWindow[0].Height != headers[6].Height {
-		t.Fatalf("eviction order wrong: oldest=%d expected %d", state.RetainedWindow[0].Height, headers[6].Height)
+	// After 10 appends to capacity 5, oldest retained = headers[5].
+	if state.RetainedWindow[0].Height != headers[5].Height {
+		t.Fatalf("eviction order wrong: oldest=%d expected %d", state.RetainedWindow[0].Height, headers[5].Height)
 	}
 }
 

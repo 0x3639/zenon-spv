@@ -147,11 +147,19 @@ func (b *AccountBlock) AccountHeader() AccountHeader {
 }
 
 // bigIntToBytes32 mirrors common.BigIntToBytes at
-// reference/go-zenon/common/bytes.go:33-39. Always returns 32 bytes
-// (left-padded big-endian); nil and negative values are treated as zero.
+// reference/go-zenon/common/bytes.go:33-39 byte-for-byte. Always
+// returns 32 bytes (left-padded big-endian).
+//
+// (*big.Int).Bytes() returns the absolute-value bytes (the sign is
+// dropped). go-zenon's reference unconditionally calls .Bytes() and
+// LeftPadBytes — so for parity we do the same, treating only nil and
+// zero as 32 zeros. Negative inputs are blocked upstream by
+// parseDecimalBigInt (DOC1) so this path is unreachable for negatives
+// in practice; the parity here removes a refactor footgun and keeps
+// the chain-layer envelope semantics identical to go-zenon (A1/F7).
 func bigIntToBytes32(i *big.Int) []byte {
 	out := make([]byte, 32)
-	if i == nil || i.Sign() <= 0 {
+	if i == nil || i.Sign() == 0 {
 		return out
 	}
 	src := i.Bytes()

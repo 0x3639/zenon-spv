@@ -101,7 +101,7 @@ func TestLoadOrInit_FreshStart(t *testing.T) {
 	if !state.Empty() {
 		t.Errorf("expected empty retained window on fresh start")
 	}
-	if state.Capacity != 6 {
+	if state.Capacity != 7 { // W+1 per spec §2.3
 		t.Errorf("capacity: %d", state.Capacity)
 	}
 }
@@ -157,11 +157,12 @@ func TestLoadOrInit_PolicyShrinkTruncates(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(resumed.RetainedWindow) != 2 {
-		t.Fatalf("expected truncation to 2, got %d", len(resumed.RetainedWindow))
+	// W=2 → capacity=3 (W+1 per spec §2.3); fixture has 3 retained,
+	// so no truncation is needed and all three remain.
+	if len(resumed.RetainedWindow) != 3 {
+		t.Fatalf("expected retained=3 (capacity=W+1=3), got %d", len(resumed.RetainedWindow))
 	}
-	// Most-recent retained
-	if resumed.RetainedWindow[1].Height != state.RetainedWindow[2].Height {
+	if resumed.RetainedWindow[2].Height != state.RetainedWindow[2].Height {
 		t.Errorf("truncated to wrong tail")
 	}
 }

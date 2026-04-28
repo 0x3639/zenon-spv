@@ -23,7 +23,9 @@ func segmentFixture(t *testing.T) (HeaderState, proof.AccountSegment, []proof.Co
 	genesisHash := chain.Hash{0x47, 0x45, 0x4e, 0x45, 0x53, 0x49, 0x53}
 	genesis := GenesisTrustRoot{ChainID: chainID, Height: genesisHeight, HeaderHash: genesisHash}
 
-	addr := chain.Address{0xab, 0xcd, 0xef}
+	// Address must derive from the signing public key per F1
+	// (chain.PubKeyToAddress = UserAddrByte || sha3.Sum256(pub)[0:19]).
+	addr := chain.PubKeyToAddress(pub)
 
 	// Build two account blocks for `addr`: heights 1, 2, both
 	// acknowledging the same momentum (heights[2] = 103).
@@ -68,13 +70,16 @@ func segmentFixture(t *testing.T) (HeaderState, proof.AccountSegment, []proof.Co
 	}
 	committedContentHash := flatContentHash(committed)
 
-	// Now build 6 momentum headers; the third (height 103) commits
-	// the synthetic Content.
+	// Build 9 momentum headers; the third (height 103) commits the
+	// synthetic Content. With WindowLow=6 and capacity=W+1=7, the
+	// retained window after 9 appends spans heights 103..109 — so
+	// the commitment at 103 satisfies the F2 post-target depth check
+	// (tip=109 >= 103 + 6).
 	momentumPriv := ed25519.NewKeyFromSeed(make([]byte, ed25519.SeedSize))
 	momentumPub := momentumPriv.Public().(ed25519.PublicKey)
-	headers := make([]chain.Header, 6)
+	headers := make([]chain.Header, 9)
 	prev := genesisHash
-	for i := 0; i < 6; i++ {
+	for i := 0; i < 9; i++ {
 		h := chain.Header{
 			Version:         1,
 			ChainIdentifier: chainID,
@@ -116,7 +121,7 @@ func segmentFixture(t *testing.T) (HeaderState, proof.AccountSegment, []proof.Co
 
 func TestVerifySegment_AllAccept(t *testing.T) {
 	state, segment, commitments, _ := segmentFixture(t)
-	res := VerifySegment(state, segment, commitments)
+	res := VerifySegment(state, segment, commitments, segmentFixturePolicy())
 	for i, r := range res.Blocks {
 		if r.Outcome != OutcomeAccept || r.Reason != ReasonOK {
 			t.Errorf("block[%d]: expected ACCEPT/OK, got %s", i, r)
@@ -130,7 +135,7 @@ func TestVerifySegment_AllAccept(t *testing.T) {
 func TestVerifySegment_AddressMismatch(t *testing.T) {
 	state, segment, commitments, _ := segmentFixture(t)
 	segment.Blocks[0].Address = chain.Address{0xff} // mismatch
-	res := VerifySegment(state, segment, commitments)
+	res := VerifySegment(state, segment, commitments, segmentFixturePolicy())
 	if res.Blocks[0].Outcome != OutcomeReject || res.Blocks[0].Reason != ReasonAddressMismatch {
 		t.Errorf("expected REJECT/AddressMismatch, got %s", res.Blocks[0])
 	}
@@ -139,7 +144,7 @@ func TestVerifySegment_AddressMismatch(t *testing.T) {
 func TestVerifySegment_TamperedHash(t *testing.T) {
 	state, segment, commitments, _ := segmentFixture(t)
 	segment.Blocks[0].Amount = big.NewInt(99999) // change a signed field; BlockHash is now stale
-	res := VerifySegment(state, segment, commitments)
+	res := VerifySegment(state, segment, commitments, segmentFixturePolicy())
 	if res.Blocks[0].Outcome != OutcomeReject || res.Blocks[0].Reason != ReasonInvalidHash {
 		t.Errorf("expected REJECT/InvalidHash, got %s", res.Blocks[0])
 	}
@@ -149,7 +154,7 @@ func TestVerifySegment_BadSignature(t *testing.T) {
 	state, segment, commitments, _ := segmentFixture(t)
 	segment.Blocks[0].Signature = append([]byte{}, segment.Blocks[0].Signature...)
 	segment.Blocks[0].Signature[0] ^= 0xff
-	res := VerifySegment(state, segment, commitments)
+	res := VerifySegment(state, segment, commitments, segmentFixturePolicy())
 	if res.Blocks[0].Outcome != OutcomeReject || res.Blocks[0].Reason != ReasonInvalidSignature {
 		t.Errorf("expected REJECT/InvalidSignature, got %s", res.Blocks[0])
 	}
@@ -160,7 +165,7 @@ func TestVerifySegment_BrokenLinkage(t *testing.T) {
 	segment.Blocks[1].PreviousHash[0] ^= 0xff
 	segment.Blocks[1].BlockHash = segment.Blocks[1].ComputeHash()
 	segment.Blocks[1].Signature = ed25519.Sign(priv, segment.Blocks[1].BlockHash[:])
-	res := VerifySegment(state, segment, commitments)
+	res := VerifySegment(state, segment, commitments, segmentFixturePolicy())
 	if res.Blocks[1].Outcome != OutcomeReject || res.Blocks[1].Reason != ReasonBrokenLinkage {
 		t.Errorf("expected REJECT/BrokenLinkage, got %s", res.Blocks[1])
 	}
@@ -172,7 +177,7 @@ func TestVerifySegment_HeightNonMonotonic(t *testing.T) {
 	segment.Blocks[1].PreviousHash = segment.Blocks[0].BlockHash
 	segment.Blocks[1].BlockHash = segment.Blocks[1].ComputeHash()
 	segment.Blocks[1].Signature = ed25519.Sign(priv, segment.Blocks[1].BlockHash[:])
-	res := VerifySegment(state, segment, commitments)
+	res := VerifySegment(state, segment, commitments, segmentFixturePolicy())
 	if res.Blocks[1].Outcome != OutcomeReject || res.Blocks[1].Reason != ReasonHeightNonMonotonic {
 		t.Errorf("expected REJECT/HeightNonMonotonic, got %s", res.Blocks[1])
 	}
@@ -185,7 +190,7 @@ func TestVerifySegment_CommittingMomentumNotInWindow(t *testing.T) {
 	for i := range commitments {
 		commitments[i].Height = 9_999_999
 	}
-	res := VerifySegment(state, segment, commitments)
+	res := VerifySegment(state, segment, commitments, segmentFixturePolicy())
 	if res.Blocks[0].Outcome != OutcomeRefused || res.Blocks[0].Reason != ReasonHeightOutOfWindow {
 		t.Errorf("expected REFUSED/HeightOutOfWindow, got %s", res.Blocks[0])
 	}
@@ -196,20 +201,73 @@ func TestVerifySegment_CommittingMomentumNotInWindow(t *testing.T) {
 
 func TestVerifySegment_MissingProof(t *testing.T) {
 	state, segment, _, _ := segmentFixture(t)
-	res := VerifySegment(state, segment, nil) // no commitments at all
+	res := VerifySegment(state, segment, nil, segmentFixturePolicy()) // no commitments at all
 	if res.Blocks[0].Outcome != OutcomeRefused || res.Blocks[0].Reason != ReasonMissingProof {
 		t.Errorf("expected REFUSED/MissingProof, got %s", res.Blocks[0])
 	}
 }
 
-func TestVerifySegment_Empty(t *testing.T) {
-	state, _, _, _ := segmentFixture(t)
-	res := VerifySegment(state, proof.AccountSegment{}, nil)
-	if len(res.Blocks) != 0 {
-		t.Errorf("expected empty results, got %d", len(res.Blocks))
+// segmentFixturePolicy is the policy the fixture is sized to satisfy.
+func segmentFixturePolicy() Policy { return Policy{W: WindowLow} }
+
+// TestAttack_SegmentRejectsPublicKeyNotMatchingAddress demonstrates
+// F1: an attacker with their own keypair signs a block claiming a
+// victim's address. go-zenon catches this with ErrABPublicKeyWrongAddress
+// (verifier/account_block.go:445-447); the SPV must too.
+func TestAttack_SegmentRejectsPublicKeyNotMatchingAddress(t *testing.T) {
+	state, segment, commitments, _ := segmentFixture(t)
+	// Generate a different keypair; sign block[0] with it. The block
+	// retains segment.Address, so address-mismatch (the per-block
+	// segment.Address vs block.Address check) does NOT fire — we
+	// specifically need the F1 PubKeyToAddress binding.
+	attackerSeed := make([]byte, ed25519.SeedSize)
+	attackerSeed[0] = 0xff
+	attackerPriv := ed25519.NewKeyFromSeed(attackerSeed)
+	attackerPub := attackerPriv.Public().(ed25519.PublicKey)
+	segment.Blocks[0].PublicKey = append([]byte{}, attackerPub...)
+	// Recompute hash + signature so the block is internally consistent
+	// (a real attacker would do this); only the F1 binding catches it.
+	segment.Blocks[0].BlockHash = segment.Blocks[0].ComputeHash()
+	segment.Blocks[0].Signature = ed25519.Sign(attackerPriv, segment.Blocks[0].BlockHash[:])
+
+	res := VerifySegment(state, segment, commitments, segmentFixturePolicy())
+	if res.Blocks[0].Outcome != OutcomeReject || res.Blocks[0].Reason != ReasonPublicKeyAddressMismatch {
+		t.Fatalf("F1: accepted block signed by key not derived from address; want REJECT/PublicKeyAddressMismatch, got %s",
+			res.Blocks[0])
 	}
-	if res.Worst() != OutcomeAccept {
-		t.Errorf("Worst() on empty = %s, want ACCEPT", res.Worst())
+}
+
+// TestAttack_DuplicateCommitmentDoesNotMaskValidEvidence demonstrates
+// F5: duplicate evidence for the same target must not let a stale or
+// invalid candidate mask a valid one. The fixture's commitments
+// ACCEPT; we prepend a stale duplicate at an out-of-window height
+// and require the block still ACCEPTs.
+func TestAttack_DuplicateCommitmentDoesNotMaskValidEvidence(t *testing.T) {
+	state, segment, commitments, _ := segmentFixture(t)
+	stale := commitments[0]
+	stale.Height = 1 // out of retained window
+	commitments = append([]proof.CommitmentEvidence{stale}, commitments...)
+
+	res := VerifySegment(state, segment, commitments, segmentFixturePolicy())
+	if res.Blocks[0].Outcome != OutcomeAccept {
+		t.Fatalf("F5: stale duplicate masked valid evidence; got %s", res.Blocks[0])
+	}
+}
+
+// TestAttack_EmptySegmentRefuses (was TestVerifySegment_Empty) covers
+// F6: an empty AccountSegment must REFUSE rather than vacuously
+// ACCEPT. VerifySegment now emits a synthetic REFUSED entry.
+func TestAttack_EmptySegmentRefuses(t *testing.T) {
+	state, _, _, _ := segmentFixture(t)
+	res := VerifySegment(state, proof.AccountSegment{}, nil, segmentFixturePolicy())
+	if len(res.Blocks) != 1 {
+		t.Fatalf("expected 1 synthetic refusal, got %d", len(res.Blocks))
+	}
+	if res.Blocks[0].Outcome != OutcomeRefused || res.Blocks[0].Reason != ReasonMissingEvidence {
+		t.Errorf("expected REFUSED/MissingEvidence, got %s", res.Blocks[0])
+	}
+	if res.Worst() != OutcomeRefused {
+		t.Errorf("Worst() on empty = %s, want REFUSED", res.Worst())
 	}
 }
 

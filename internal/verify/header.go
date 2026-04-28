@@ -102,7 +102,12 @@ func VerifyHeaders(headers []chain.Header, state HeaderState, policy Policy) (Re
 			return reject(ReasonInvalidSignature, i,
 				fmt.Sprintf("public key length %d != %d", len(h.PublicKey), ed25519.PublicKeySize)), state
 		}
-		if !ed25519.Verify(ed25519.PublicKey(h.PublicKey), h.HeaderHash[:], h.Signature) {
+		// B1: pass `recomputed[:]` rather than `h.HeaderHash[:]` so the
+		// signature is verified over the locally-recomputed hash, not
+		// the wire-claimed value. Equivalent today because the equality
+		// check above gates this path; this removes the implicit
+		// precondition for future readers.
+		if !ed25519.Verify(ed25519.PublicKey(h.PublicKey), recomputed[:], h.Signature) {
 			return reject(ReasonInvalidSignature, i, "ed25519 verify failed"), state
 		}
 
@@ -120,6 +125,11 @@ func VerifyHeaders(headers []chain.Header, state HeaderState, policy Policy) (Re
 		prevHeight = h.Height
 	}
 
+	// VerifyHeaders ACCEPT requires the policy window to be built up
+	// (retained ≥ W). The strict "W headers past target" property
+	// per spec §2.3 is enforced by VerifyCommitment, not here — the
+	// retained-window capacity is sized to W+1 so the oldest retained
+	// momentum still has W strict-past headers available for queries.
 	if uint64(len(working.RetainedWindow)) < policy.W {
 		return refuse(ReasonWindowNotMet,
 			fmt.Sprintf("retained=%d < policy.W=%d", len(working.RetainedWindow), policy.W)), state

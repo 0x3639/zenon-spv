@@ -28,10 +28,19 @@ type persistedState struct {
 	Capacity int              `json:"capacity"`
 }
 
-// SaveHeaderState atomically writes state to path as JSON. The write
-// is crash-safe: data goes to <path>.tmp, fsync, rename(tmp, path).
-// A torn file on disk is impossible if rename is atomic on the
-// filesystem (true on every modern POSIX FS).
+// SaveHeaderState atomically writes state to path as JSON. The
+// sequence is: write to <path>.tmp, fsync(tmp), close, rename, then
+// fsync the parent directory.
+//
+// All three syncs matter for crash safety on Linux ext4 with default
+// data=ordered: fsync(tmp) makes the file's contents durable; the
+// rename is atomic so a torn file is impossible; and fsync(parent)
+// (C1) makes the directory entry pointing to the new inode durable —
+// without it, a power loss between rename and the next journal commit
+// can revert the directory entry and the state file appears to roll
+// back to its previous content. The dir-sync is best-effort on
+// Windows (returns ENOTSUP); the rename itself is durable on NTFS so
+// we tolerate the open error.
 //
 // Only call after a successful VerifyHeaders ACCEPT — persisting a
 // state that wasn't proven would silently lower the SPV's trust.
@@ -75,6 +84,14 @@ func SaveHeaderState(path string, state HeaderState) error {
 	if err := os.Rename(tmpPath, path); err != nil {
 		cleanup()
 		return fmt.Errorf("rename: %w", err)
+	}
+	// C1: fsync the parent directory so the renamed entry is durable
+	// across power loss. Silent on Windows (open will fail with
+	// ENOTSUP / EACCES); ignore the open error there since NTFS
+	// renames are durable without it.
+	if d, err := os.Open(dir); err == nil {
+		_ = d.Sync()
+		_ = d.Close()
 	}
 	return nil
 }
@@ -139,10 +156,7 @@ func LoadOrInit(path string, genesis GenesisTrustRoot, policy Policy) (HeaderSta
 		return HeaderState{}, fmt.Errorf("state file genesis hash %x != configured genesis hash %x (different trust roots)",
 			loaded.Genesis.HeaderHash, genesis.HeaderHash)
 	}
-	cap := int(policy.W)
-	if cap < 1 {
-		cap = 1
-	}
+	cap := capacityForPolicy(policy)
 	loaded.Capacity = cap
 	if len(loaded.RetainedWindow) > cap {
 		loaded.RetainedWindow = loaded.RetainedWindow[len(loaded.RetainedWindow)-cap:]

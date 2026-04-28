@@ -12,22 +12,26 @@ import (
 )
 
 // VerifyCommitment proves that evidence.Target was committed in the
-// momentum at evidence.Height under that momentum's ContentHash.
+// momentum at evidence.Height under that momentum's ContentHash, and
+// that the committing momentum is finality-deep per policy.W.
 //
-// Per zenon-spv-vault/spec/spv-implementation-guide.md §4.3:
+// Per zenon-spv-vault/spec/spv-implementation-guide.md §2.3 and §4.3:
 //
-//	VerifyCommitment(r_C(h), c, π_C) -> {ACCEPT, REJECT, REFUSED}
+//	VerifyCommitment(r_C(h), c, π_C, policy) -> {ACCEPT, REJECT, REFUSED}
 //
 // Algorithm (FlatContentEvidence arm):
 //
 //	1. Find the verified momentum at evidence.Height in state.RetainedWindow.
 //	   Not found → REFUSED/HeightOutOfWindow.
-//	2. Recompute MomentumContent.Hash() over evidence.Flat.SortedHeaders.
+//	2. Enforce policy finality: tip.Height >= evidence.Height + policy.W
+//	   (W consecutive verified headers AFTER the queried height per
+//	   §2.3). Otherwise → REFUSED/InsufficientFinality (F2).
+//	3. Recompute MomentumContent.Hash() over evidence.Flat.SortedHeaders.
 //	   Must equal that momentum's ContentHash field.
 //	   Mismatch → REJECT/InvalidContent.
-//	3. Linear-scan SortedHeaders for evidence.Target.
+//	4. Linear-scan SortedHeaders for evidence.Target.
 //	   Not found → REJECT/NotMember.
-//	4. Otherwise → ACCEPT.
+//	5. Otherwise → ACCEPT.
 //
 // state must be the result of a successful VerifyHeaders call:
 // VerifyCommitment trusts state.RetainedWindow as the authoritative
@@ -40,7 +44,7 @@ import (
 // NOT verify that the underlying account block executed correctly
 // (NG1) or that this is the only block at that (address, height) on
 // the canonical chain (NG6). Effect-equivalence only.
-func VerifyCommitment(state HeaderState, evidence proof.CommitmentEvidence) Result {
+func VerifyCommitment(state HeaderState, evidence proof.CommitmentEvidence, policy Policy) Result {
 	header, ok := findHeaderAtHeight(state, evidence.Height)
 	if !ok {
 		return Result{
@@ -48,6 +52,21 @@ func VerifyCommitment(state HeaderState, evidence proof.CommitmentEvidence) Resu
 			Reason:   ReasonHeightOutOfWindow,
 			Message:  fmt.Sprintf("height %d not in retained window", evidence.Height),
 			FailedAt: -1,
+		}
+	}
+	// F2: enforce spec §2.3 — W consecutive verified headers AFTER
+	// the queried height. With Capacity = W+1, the retained window
+	// always satisfies tip.Height - evidence.Height >= W when the
+	// commitment is at the oldest retained slot; this check makes
+	// the property load-bearing instead of incidentally true.
+	if tip, hasTip := state.Tip(); hasTip {
+		if tip.Height < evidence.Height+policy.W {
+			return Result{
+				Outcome:  OutcomeRefused,
+				Reason:   ReasonInsufficientFinality,
+				Message:  fmt.Sprintf("tip=%d < evidence.height=%d + W=%d (need %d headers past target)", tip.Height, evidence.Height, policy.W, policy.W),
+				FailedAt: -1,
+			}
 		}
 	}
 	if evidence.Flat == nil {
@@ -85,10 +104,10 @@ func VerifyCommitment(state HeaderState, evidence proof.CommitmentEvidence) Resu
 // evidence in input order. A REFUSED or REJECT on any evidence does
 // NOT short-circuit subsequent evidence — wallets and explorers want
 // to know which targets were proven and which weren't.
-func VerifyCommitments(state HeaderState, batch []proof.CommitmentEvidence) []Result {
+func VerifyCommitments(state HeaderState, batch []proof.CommitmentEvidence, policy Policy) []Result {
 	out := make([]Result, len(batch))
 	for i, e := range batch {
-		out[i] = VerifyCommitment(state, e)
+		out[i] = VerifyCommitment(state, e, policy)
 	}
 	return out
 }

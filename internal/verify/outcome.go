@@ -49,8 +49,11 @@ const (
 	ReasonNotMember          // Phase 2: target AccountHeader not present in evidence
 	ReasonHeightOutOfWindow  // Phase 2: commitment height not in retained window
 	ReasonMissingProof       // Phase 2: no Flat or Merkle proof attached
-	ReasonAddressMismatch    // Phase 3: block.Address != segment.Address
-	ReasonCheckpointMismatch // Trust-hardening: header at a checkpoint height has the wrong hash
+	ReasonAddressMismatch              // Phase 3: block.Address != segment.Address
+	ReasonCheckpointMismatch           // Trust-hardening: header at a checkpoint height has the wrong hash
+	ReasonPublicKeyAddressMismatch     // F1: chain.PubKeyToAddress(block.PublicKey) != block.Address
+	ReasonEmbeddedMustNotSign          // F1: embedded-contract block carries non-empty PublicKey or Signature
+	ReasonInsufficientFinality         // F2: tip.Height < evidence.Height + policy.W (W headers past target)
 )
 
 // String returns a stable, snake-case-equivalent name for serialization.
@@ -90,6 +93,12 @@ func (r ReasonCode) String() string {
 		return "ReasonAddressMismatch"
 	case ReasonCheckpointMismatch:
 		return "ReasonCheckpointMismatch"
+	case ReasonPublicKeyAddressMismatch:
+		return "ReasonPublicKeyAddressMismatch"
+	case ReasonEmbeddedMustNotSign:
+		return "ReasonEmbeddedMustNotSign"
+	case ReasonInsufficientFinality:
+		return "ReasonInsufficientFinality"
 	default:
 		return fmt.Sprintf("ReasonCode(%d)", int(r))
 	}

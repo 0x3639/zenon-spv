@@ -6,8 +6,11 @@ import "github.com/0x3639/zenon-spv/internal/chain"
 // trust anchors needed to extend it.
 //
 // Per zenon-spv-vault/spec/spv-implementation-guide.md §2 + §6.1,
-// retained-window storage is bounded by w * σ_H. The window is a FIFO
-// ring — when full, oldest header is evicted on Append.
+// retained-window storage is bounded by (w+1) * σ_H — the spec's
+// "k consecutive verified headers AFTER height h" definition (§2.3)
+// requires keeping the target plus W headers past it, so the window
+// holds W+1 entries. The window is a FIFO ring — when full, oldest
+// header is evicted on Append.
 //
 // This type is the unit of offline-resume state in later phases:
 // the verifier serializes HeaderState to disk and resumes from its
@@ -18,13 +21,21 @@ type HeaderState struct {
 	Capacity       int
 }
 
-// NewHeaderState builds an empty state anchored at g, sized for
-// policy.W headers of retention.
-func NewHeaderState(g GenesisTrustRoot, policy Policy) HeaderState {
-	cap := int(policy.W)
+// capacityForPolicy returns the minimum retained-window capacity
+// needed to satisfy spec §2.3's "W headers after target" with the
+// target itself remaining addressable: W+1.
+func capacityForPolicy(policy Policy) int {
+	cap := int(policy.W) + 1
 	if cap < 1 {
 		cap = 1
 	}
+	return cap
+}
+
+// NewHeaderState builds an empty state anchored at g, sized for
+// policy.W+1 headers of retention (target + W past).
+func NewHeaderState(g GenesisTrustRoot, policy Policy) HeaderState {
+	cap := capacityForPolicy(policy)
 	return HeaderState{
 		Genesis:        g,
 		RetainedWindow: make([]chain.Header, 0, cap),

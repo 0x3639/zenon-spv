@@ -148,7 +148,7 @@ func runVerifyCommitment(args []string) int {
 		return 2
 	}
 
-	results := verify.VerifyCommitments(newState, ctx.bundle.Commitments)
+	results := verify.VerifyCommitments(newState, ctx.bundle.Commitments, ctx.policy)
 	worst := verify.OutcomeAccept
 	for i, r := range results {
 		c := ctx.bundle.Commitments[i]
@@ -205,7 +205,7 @@ func runVerifySegment(args []string) int {
 
 	worst := verify.OutcomeAccept
 	for si, seg := range ctx.bundle.Segments {
-		segRes := verify.VerifySegment(newState, seg, ctx.bundle.Commitments)
+		segRes := verify.VerifySegment(newState, seg, ctx.bundle.Commitments, ctx.policy)
 		fmt.Printf("segment[%d] address=%x blocks=%d:\n", si, seg.Address, len(seg.Blocks))
 		for bi, r := range segRes.Blocks {
 			fmt.Printf("  block[%d] height=%d: %s\n", bi, seg.Blocks[bi].Height, r)

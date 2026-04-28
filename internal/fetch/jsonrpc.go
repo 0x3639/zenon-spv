@@ -4,11 +4,25 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"time"
 )
+
+// MaxResponseBytes caps the size of any single JSON-RPC response body
+// the client will read. A malicious peer can otherwise force the
+// process to allocate gigabytes via a large 200 OK body or — if
+// transparent gzip is left on — a small compressed payload that
+// expands wildly (D2: OOM via unbounded response). 64 MiB is well
+// below typical RAM and several orders of magnitude above the largest
+// legitimate response (a 100k-block momentum batch is far smaller).
+const MaxResponseBytes = 64 * 1024 * 1024
+
+// ErrResponseTooLarge is returned when a peer sends a body larger
+// than MaxResponseBytes.
+var ErrResponseTooLarge = errors.New("rpc response exceeds size limit")
 
 // Client is a minimal JSON-RPC 2.0 client for Zenon nodes. It supports
 // only the subset of methods the SPV needs to build verifiable bundles.
@@ -22,12 +36,19 @@ type Client struct {
 	HTTP *http.Client
 }
 
-// NewClient returns a Client with a sane default HTTP timeout.
+// NewClient returns a Client with a sane default HTTP timeout and a
+// transport that disables transparent gzip decompression. Disabling
+// gzip is a defense against decompression-bomb peers (D2): a small
+// gzipped payload could otherwise decompress to gigabytes inside
+// io.ReadAll. The transport is otherwise the stdlib default.
 func NewClient(url string) *Client {
 	return &Client{
 		URL: url,
 		HTTP: &http.Client{
 			Timeout: 30 * time.Second,
+			Transport: &http.Transport{
+				DisableCompression: true,
+			},
 		},
 	}
 }
@@ -74,9 +95,14 @@ func (c *Client) Call(ctx context.Context, method string, params any, out any) e
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		return fmt.Errorf("rpc http %d: %s", resp.StatusCode, string(body))
 	}
-	raw, err := io.ReadAll(resp.Body)
+	// D2: cap response body at MaxResponseBytes. Read one extra byte
+	// so we can distinguish "exactly at limit" from "exceeded limit".
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, MaxResponseBytes+1))
 	if err != nil {
 		return fmt.Errorf("read body: %w", err)
+	}
+	if int64(len(raw)) > MaxResponseBytes {
+		return fmt.Errorf("%w: read %d bytes, max %d", ErrResponseTooLarge, len(raw), MaxResponseBytes)
 	}
 	var r rpcResponse
 	if err := json.Unmarshal(raw, &r); err != nil {
