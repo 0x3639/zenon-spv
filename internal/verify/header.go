@@ -26,6 +26,13 @@ import (
 // determination, or global agreement. The MVP also does not verify
 // that PublicKey belongs to the active producer set — see
 // docs/conformance.md §2.1.
+//
+// VerifyHeaders consults MainnetCheckpoints() (when state.Genesis is
+// configured for chain_id=1) for embedded weak-subjectivity defenses
+// per spec §2.5. A header at a checkpoint height whose hash differs
+// from the embedded entry returns REJECT/CheckpointMismatch — this
+// catches long-range fork attempts that an attacker might serve to a
+// fresh-start verifier.
 func VerifyHeaders(headers []chain.Header, state HeaderState, policy Policy) (Result, HeaderState) {
 	if len(headers) == 0 {
 		return refuse(ReasonMissingEvidence, "no headers supplied"), state
@@ -40,6 +47,15 @@ func VerifyHeaders(headers []chain.Header, state HeaderState, policy Policy) (Re
 		Genesis:        state.Genesis,
 		Capacity:       state.Capacity,
 		RetainedWindow: append(make([]chain.Header, 0, len(state.RetainedWindow)+len(headers)), state.RetainedWindow...),
+	}
+
+	// Embedded checkpoints apply only to mainnet (chain_id=1). Other
+	// networks (testnet, devnet, custom checkpoints supplied via
+	// --genesis-config) get an empty list — no defense, but also no
+	// false positives from mainnet entries.
+	var checkpoints []Checkpoint
+	if state.Genesis.ChainID == MainnetChainID {
+		checkpoints = MainnetCheckpoints()
 	}
 
 	var (
@@ -90,9 +106,14 @@ func VerifyHeaders(headers []chain.Header, state HeaderState, policy Policy) (Re
 			return reject(ReasonInvalidSignature, i, "ed25519 verify failed"), state
 		}
 
+		if cp, ok := CheckpointAtHeight(checkpoints, h.Height); ok && cp.HeaderHash != h.HeaderHash {
+			return reject(ReasonCheckpointMismatch, i,
+				fmt.Sprintf("header at checkpoint h=%d: claimed=%x embedded=%x", h.Height, h.HeaderHash, cp.HeaderHash)), state
+		}
+
 		// TODO(quorum): verify h.PublicKey is a member of the active
 		// producer set at h.Height. Required for full G1 per
-		// bounded-verification-boundaries.md §4. Out of MVP scope.
+		// bounded-verification-boundaries.md §4. See ADR 0004.
 
 		working.Append(h)
 		prevHash = h.HeaderHash
