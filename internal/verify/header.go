@@ -34,11 +34,47 @@ import (
 // catches long-range fork attempts that an attacker might serve to a
 // fresh-start verifier.
 func VerifyHeaders(headers []chain.Header, state HeaderState, policy Policy) (Result, HeaderState) {
+	return VerifyHeadersWithOptions(headers, state, VerifyOptions{
+		Policy:       policy,
+		ProducerAuth: ProducerAuthOptions{Mode: ProducerAuthDisabled},
+	})
+}
+
+// VerifyHeadersWithOptions is the full-featured entry point. It
+// accepts a VerifyOptions struct so production CLI paths can opt
+// into producer authorization without disturbing the legacy
+// VerifyHeaders signature that the existing test corpus uses.
+//
+// Producer-auth semantics (per docs/producer-set-verification.md §4):
+//
+//   - opts.ProducerAuth.Mode == Disabled  → producer check skipped;
+//     CLI must still print the no-authorizer caveat.
+//   - opts.ProducerAuth.Mode == Required + Authorizer == nil →
+//     REFUSED / ReasonProducerSetUnknown on the FIRST header (no
+//     silent downgrade). The verifier must not pretend authorization
+//     happened when no authorizer is available.
+//   - opts.ProducerAuth.Mode == Required + Authorizer != nil →
+//     Authorize per header; Unauthorized → REJECT /
+//     ReasonUnauthorizedProducer; Unknown → REFUSED /
+//     ReasonProducerSetUnknown.
+//
+// All other verification semantics (linkage, hash, signature,
+// checkpoint, window) are identical to VerifyHeaders.
+func VerifyHeadersWithOptions(headers []chain.Header, state HeaderState, opts VerifyOptions) (Result, HeaderState) {
+	policy := opts.Policy
 	if len(headers) == 0 {
 		return refuse(ReasonMissingEvidence, "no headers supplied"), state
 	}
 	if policy.MaxHeaders > 0 && len(headers) > policy.MaxHeaders {
 		return refuse(ReasonMissingEvidence, fmt.Sprintf("input %d exceeds MaxHeaders=%d", len(headers), policy.MaxHeaders)), state
+	}
+
+	// Required mode with no authorizer is REFUSED — Codex review v1
+	// P2 lock-in. Surface this once at the input boundary rather than
+	// per-header so the diagnostic is actionable.
+	if opts.ProducerAuth.Mode == ProducerAuthRequired && opts.ProducerAuth.Authorizer == nil {
+		return refuse(ReasonProducerSetUnknown,
+			"producer authorization required but no authorizer configured"), state
 	}
 
 	// Work on a copy so a REJECT mid-loop leaves caller's state
@@ -116,9 +152,24 @@ func VerifyHeaders(headers []chain.Header, state HeaderState, policy Policy) (Re
 				fmt.Sprintf("header at checkpoint h=%d: claimed=%x embedded=%x", h.Height, h.HeaderHash, cp.HeaderHash)), state
 		}
 
-		// TODO(quorum): verify h.PublicKey is a member of the active
-		// producer set at h.Height. Required for full G1 per
-		// bounded-verification-boundaries.md §4. See ADR 0004.
+		// Producer authorization (Branch 5b). Only runs when the caller
+		// passed ProducerAuthRequired with a non-nil authorizer; the
+		// Disabled path (and the boundary-checked Required+nil path
+		// above) skip this block. Decision semantics live in
+		// docs/producer-set-verification.md §4.
+		if opts.ProducerAuth.Mode == ProducerAuthRequired {
+			switch opts.ProducerAuth.Authorizer.Authorize(h.Height, h.TimestampUnix, h.PublicKey) {
+			case ProducerAuthorized:
+				// fall through to Append
+			case ProducerUnauthorized:
+				return reject(ReasonUnauthorizedProducer, i,
+					fmt.Sprintf("producer not authorized for height=%d timestamp=%d",
+						h.Height, h.TimestampUnix)), state
+			case ProducerSetUnknown:
+				return refuse(ReasonProducerSetUnknown,
+					fmt.Sprintf("no producer schedule coverage for height=%d", h.Height)), state
+			}
+		}
 
 		working.Append(h)
 		prevHash = h.HeaderHash

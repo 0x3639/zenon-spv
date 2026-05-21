@@ -55,6 +55,8 @@ const (
 	ReasonEmbeddedMustNotSign          // F1: embedded-contract block carries non-empty PublicKey or Signature
 	ReasonInsufficientFinality         // F2: tip.Height < evidence.Height + policy.W (W headers past target)
 	ReasonParentNotAccepted            // Segment linkage: previous block in the segment did not ACCEPT, so this block cannot be part of the verified chain
+	ReasonUnauthorizedProducer         // Branch 5b: producer authorization mismatch (timestamp or producing-address disagrees with schedule)
+	ReasonProducerSetUnknown           // Branch 5b: no producer schedule covers this height; verifier refuses to extrapolate
 )
 
 // String returns a stable, snake-case-equivalent name for serialization.
@@ -102,6 +104,10 @@ func (r ReasonCode) String() string {
 		return "ReasonInsufficientFinality"
 	case ReasonParentNotAccepted:
 		return "ReasonParentNotAccepted"
+	case ReasonUnauthorizedProducer:
+		return "ReasonUnauthorizedProducer"
+	case ReasonProducerSetUnknown:
+		return "ReasonProducerSetUnknown"
 	default:
 		return fmt.Sprintf("ReasonCode(%d)", int(r))
 	}
