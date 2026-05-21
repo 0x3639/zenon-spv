@@ -201,7 +201,7 @@ func sortUint64(s []uint64) {
 // a peer from substituting an unhashed verifier-consumed field while
 // agreeing on the hash. Returns the first usable peer's slice.
 func reconcileDetailed(results []peerDetailedResult, q int) ([]DetailedHeader, error) {
-	good := results[:0]
+	good := make([]peerDetailedResult, 0, len(results))
 	var firstErrs []string
 	for _, r := range results {
 		if r.err != nil {
@@ -277,7 +277,7 @@ func (m *MultiClient) FetchAccountBlocksByHeight(ctx context.Context, addressBec
 	}
 	wg.Wait()
 
-	good := results[:0]
+	good := make([]peerBlocksResult, 0, len(results))
 	var firstErrs []string
 	for _, r := range results {
 		if r.err != nil {
@@ -325,7 +325,7 @@ func (m *MultiClient) FetchAccountBlocksByHeight(ctx context.Context, addressBec
 // from substituting an unhashed verifier-consumed field while still
 // agreeing on the hash. Any disagreement is fatal.
 func reconcileByHeight(results []peerResult, q int) ([]chain.Header, error) {
-	good := results[:0]
+	good := make([]peerResult, 0, len(results))
 	var firstErrs []string
 	for _, r := range results {
 		if r.err != nil {

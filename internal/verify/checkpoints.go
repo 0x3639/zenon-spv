@@ -3,6 +3,7 @@ package verify
 import (
 	"encoding/hex"
 	"sort"
+	"strconv"
 
 	"github.com/0x3639/zenon-spv/internal/chain"
 )
@@ -70,19 +71,5 @@ func CheckpointAtHeight(checkpoints []Checkpoint, h uint64) (Checkpoint, bool) {
 
 // String renders a checkpoint as "h=N hash=HEX" for diagnostics.
 func (c Checkpoint) String() string {
-	return "h=" + uitos(c.Height) + " hash=" + hex.EncodeToString(c.HeaderHash[:])
-}
-
-func uitos(u uint64) string {
-	if u == 0 {
-		return "0"
-	}
-	var buf [20]byte
-	i := len(buf)
-	for u > 0 {
-		i--
-		buf[i] = byte('0' + u%10)
-		u /= 10
-	}
-	return string(buf[i:])
+	return "h=" + strconv.FormatUint(c.Height, 10) + " hash=" + hex.EncodeToString(c.HeaderHash[:])
 }

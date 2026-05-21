@@ -14,6 +14,15 @@ package verify
 // corresponding bound (back-compat for tests; production builds
 // should always set non-zero defaults via DefaultPolicy /
 // PolicyForTier).
+//
+// Type convention: W is uint64 because spec §2.3 expresses the
+// policy window depth as an unsigned protocol parameter and because
+// callers compare it against header heights (also uint64). The
+// Max* count caps are int because they bound slice lengths (Go
+// slice indexing is int, and len() returns int). The two types
+// intentionally differ — do not force one to the other; bridging
+// happens at the call site (uint64(len(slice)) for the few places
+// that compare a slice length against W).
 type Policy struct {
 	W uint64 // policy-window depth in headers
 
