@@ -74,10 +74,10 @@ import (
 const usage = `zenon-spv — resource-bounded Zenon SPV verifier
 
 Usage:
-  zenon-spv verify-headers     <bundle.json> [--window {low|medium|high}] [--genesis-config <path>] [--state <path>]
-  zenon-spv verify-commitment  <bundle.json> [--window ...] [--genesis-config ...] [--state <path>]
-  zenon-spv verify-segment     <bundle.json> [--window ...] [--genesis-config ...] [--state <path>]
-  zenon-spv watch              [--peers <urls>|--rpc <url>] --state <path> [--genesis-config ...]
+  zenon-spv verify-headers     <bundle.json> [--window {low|medium|high}] [--genesis-config <path>] [--state <path>] [--schedule <path>]
+  zenon-spv verify-commitment  <bundle.json> [--window ...] [--genesis-config ...] [--state <path>] [--schedule <path>]
+  zenon-spv verify-segment     <bundle.json> [--window ...] [--genesis-config ...] [--state <path>] [--schedule <path>]
+  zenon-spv watch              [--peers <urls>|--rpc <url>] --state <path> [--schedule <path>] [--genesis-config ...]
                                [--window ...] [--interval <dur>] [--safety-margin <n>] [--batch-size <n>] [--quorum <k>]
 
 Subcommands:
@@ -105,6 +105,13 @@ Genesis trust root defaults to the embedded mainnet anchor. Override
 via --genesis-config (JSON file) or ZENON_SPV_GENESIS_HASH +
 ZENON_SPV_CHAIN_ID env vars when verifying testnet/devnet (genesis
 height defaults to 0 if not given via ZENON_SPV_GENESIS_HEIGHT).
+
+--schedule <path> loads an operator-attested per-momentum producer
+schedule (Branch 5b). When set, the verifier requires each header's
+producer to match the schedule's expected (height, timestamp,
+producing-address) triple; failure to load aborts the run. Without
+--schedule the verifier prints a tier-1 caveat noting that producer
+authorization is not enforced.
 
 Caveat: ACCEPT means local consistency only (bounded-verification §G1–G3).
 It does not imply finality or global agreement.
@@ -138,7 +145,7 @@ func runVerifyCommitment(args []string) int {
 	if code != 0 {
 		return code
 	}
-	headerResult, newState := verify.VerifyHeaders(ctx.bundle.Headers, ctx.state, ctx.policy)
+	headerResult, newState := verify.VerifyHeadersWithOptions(ctx.bundle.Headers, ctx.state, ctx.opts)
 	fmt.Printf("headers: %s\n", headerResult)
 	if headerResult.Outcome != verify.OutcomeAccept {
 		return outcomeExitCode(headerResult.Outcome)
@@ -149,7 +156,7 @@ func runVerifyCommitment(args []string) int {
 		return 2
 	}
 
-	results := verify.VerifyCommitments(newState, ctx.bundle.Commitments, ctx.policy)
+	results := verify.VerifyCommitments(newState, ctx.bundle.Commitments, ctx.policy())
 	worst := verify.OutcomeAccept
 	for i, r := range results {
 		c := ctx.bundle.Commitments[i]
@@ -164,7 +171,7 @@ func runVerifyCommitment(args []string) int {
 		}
 	}
 	if worst == verify.OutcomeAccept {
-		printAcceptCaveat(os.Stdout, ctx.policy)
+		printAcceptCaveat(os.Stdout, ctx.opts)
 		if err := persistIfRequested(ctx.statePath, newState); err != nil {
 			fmt.Fprintf(os.Stderr, "state: %v\n", err)
 			return 70
@@ -178,10 +185,10 @@ func runVerifyHeaders(args []string) int {
 	if code != 0 {
 		return code
 	}
-	result, newState := verify.VerifyHeaders(ctx.bundle.Headers, ctx.state, ctx.policy)
+	result, newState := verify.VerifyHeadersWithOptions(ctx.bundle.Headers, ctx.state, ctx.opts)
 	fmt.Println(result)
 	if result.Outcome == verify.OutcomeAccept {
-		printAcceptCaveat(os.Stdout, ctx.policy)
+		printAcceptCaveat(os.Stdout, ctx.opts)
 		if err := persistIfRequested(ctx.statePath, newState); err != nil {
 			fmt.Fprintf(os.Stderr, "state: %v\n", err)
 			return 70
@@ -195,7 +202,7 @@ func runVerifySegment(args []string) int {
 	if code != 0 {
 		return code
 	}
-	headerResult, newState := verify.VerifyHeaders(ctx.bundle.Headers, ctx.state, ctx.policy)
+	headerResult, newState := verify.VerifyHeadersWithOptions(ctx.bundle.Headers, ctx.state, ctx.opts)
 	fmt.Printf("headers: %s\n", headerResult)
 	if headerResult.Outcome != verify.OutcomeAccept {
 		return outcomeExitCode(headerResult.Outcome)
@@ -208,7 +215,7 @@ func runVerifySegment(args []string) int {
 
 	worst := verify.OutcomeAccept
 	for si, seg := range ctx.bundle.Segments {
-		segRes := verify.VerifySegment(newState, seg, ctx.bundle.Commitments, ctx.policy)
+		segRes := verify.VerifySegment(newState, seg, ctx.bundle.Commitments, ctx.policy())
 		fmt.Printf("segment[%d] address=%x blocks=%d:\n", si, seg.Address, len(seg.Blocks))
 		for bi, r := range segRes.Blocks {
 			fmt.Printf("  block[%d] height=%d: %s\n", bi, seg.Blocks[bi].Height, r)
@@ -223,7 +230,7 @@ func runVerifySegment(args []string) int {
 		}
 	}
 	if worst == verify.OutcomeAccept {
-		printAcceptCaveat(os.Stdout, ctx.policy)
+		printAcceptCaveat(os.Stdout, ctx.opts)
 		if err := persistIfRequested(ctx.statePath, newState); err != nil {
 			fmt.Fprintf(os.Stderr, "state: %v\n", err)
 			return 70
@@ -235,13 +242,20 @@ func runVerifySegment(args []string) int {
 // verifierContext bundles everything the three verify-* subcommands
 // need from their shared prelude: parsed flags, loaded genesis,
 // loaded bundle, initialized HeaderState (loaded from --state if
-// present), and the active Policy.
+// present), and the active VerifyOptions (Policy + optional
+// producer authorizer loaded via --schedule).
 type verifierContext struct {
 	bundle    proof.HeaderBundle
 	state     verify.HeaderState
-	policy    verify.Policy
+	opts      verify.VerifyOptions
 	statePath string
 }
+
+// policy returns the embedded Policy for callers that still want
+// just the resource/finality knobs (VerifyCommitments,
+// VerifySegment). Keeps the call sites readable while opts carries
+// the producer-auth half.
+func (c *verifierContext) policy() verify.Policy { return c.opts.Policy }
 
 // prepareVerifierContext parses common flags, loads the bundle and
 // genesis, runs cross-bundle/trust-root sanity checks, and returns a
@@ -254,6 +268,7 @@ func prepareVerifierContext(name string, args []string) (verifierContext, int) {
 	tier := fs.String("window", "low", "policy window tier: low | medium | high")
 	genesisConfig := fs.String("genesis-config", "", "path to genesis trust root JSON file (overrides env)")
 	statePath := fs.String("state", "", "path to persisted HeaderState; load if present, save after ACCEPT")
+	schedulePath := fs.String("schedule", "", "path to producer schedule JSON; when set, header producer authorization is required (tier-2 caveat)")
 	if err := fs.Parse(args); err != nil {
 		return verifierContext{}, 64
 	}
@@ -308,10 +323,28 @@ func prepareVerifierContext(name string, args []string) (verifierContext, int) {
 		return verifierContext{}, 1
 	}
 
+	opts := verify.VerifyOptions{Policy: policy}
+	if *schedulePath != "" {
+		sched, err := verify.LoadProducerSchedule(*schedulePath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "schedule: %v\n", err)
+			return verifierContext{}, 70
+		}
+		if sched.ChainID != genesis.ChainID {
+			fmt.Fprintf(os.Stderr, "schedule: chain_id=%d != trust-root chain_id=%d\n",
+				sched.ChainID, genesis.ChainID)
+			return verifierContext{}, 70
+		}
+		opts.ProducerAuth = verify.ProducerAuthOptions{
+			Mode:       verify.ProducerAuthRequired,
+			Authorizer: verify.NewScheduleAuthorizer(sched),
+		}
+	}
+
 	return verifierContext{
 		bundle:    bundle,
 		state:     state,
-		policy:    policy,
+		opts:      opts,
 		statePath: *statePath,
 	}, 0
 }
@@ -335,6 +368,7 @@ func runWatch(args []string) int {
 	tier := fs.String("window", "low", "policy window tier: low | medium | high")
 	genesisConfig := fs.String("genesis-config", "", "path to genesis trust root JSON file (overrides env)")
 	statePath := fs.String("state", "", "path to persisted HeaderState (required)")
+	schedulePath := fs.String("schedule", "", "path to producer schedule JSON; when set, header producer authorization is required (tier-2 caveat)")
 	interval := fs.Duration("interval", syncer.DefaultInterval, "tick interval between iterations")
 	safetyMargin := fs.Uint64("safety-margin", syncer.DefaultSafetyMargin, "drop this many heights below min(frontier) per tick")
 	batchSize := fs.Uint64("batch-size", syncer.DefaultBatchSize, "max headers to fetch per tick (0 = no cap)")
@@ -366,11 +400,27 @@ func runWatch(args []string) int {
 	}
 	policy := verify.PolicyForTier(*tier)
 
+	var authorizer verify.ProducerAuthorizer
+	if *schedulePath != "" {
+		sched, err := verify.LoadProducerSchedule(*schedulePath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "schedule: %v\n", err)
+			return 70
+		}
+		if sched.ChainID != genesis.ChainID {
+			fmt.Fprintf(os.Stderr, "schedule: chain_id=%d != trust-root chain_id=%d\n",
+				sched.ChainID, genesis.ChainID)
+			return 70
+		}
+		authorizer = verify.NewScheduleAuthorizer(sched)
+	}
+
 	loop := &syncer.Loop{
 		Multi:        multi,
 		StatePath:    *statePath,
 		Genesis:      genesis,
 		Policy:       policy,
+		Authorizer:   authorizer,
 		Interval:     *interval,
 		SafetyMargin: *safetyMargin,
 		BatchSize:    *batchSize,
@@ -379,8 +429,16 @@ func runWatch(args []string) int {
 
 	// Surface the ACCEPT caveat once at startup. Per-tick ACCEPT logs
 	// in the syncer are stable for machine consumers; the human banner
-	// here carries the trust-assumption note.
-	printAcceptCaveat(os.Stderr, policy)
+	// here carries the trust-assumption note. Tier is determined by
+	// whether --schedule was provided (tier 1 vs tier 2).
+	startupOpts := verify.VerifyOptions{Policy: policy}
+	if authorizer != nil {
+		startupOpts.ProducerAuth = verify.ProducerAuthOptions{
+			Mode:       verify.ProducerAuthRequired,
+			Authorizer: authorizer,
+		}
+	}
+	printAcceptCaveat(os.Stderr, startupOpts)
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
@@ -410,10 +468,17 @@ func splitWatchPeers(s string) []string {
 // verdict to w. Kept out of canonical Result.String() so machine
 // consumers see stable output; surfaced at the human CLI level so an
 // integrator cannot mistake ACCEPT for a stronger guarantee than
-// this build provides. See internal/verify/caveats.go for tier
-// definitions.
-func printAcceptCaveat(w io.Writer, policy verify.Policy) {
-	fmt.Fprintln(w, verify.AcceptanceCaveat(policy))
+// this build provides. The tier is selected from opts.ProducerAuth
+// (tier 1 when no authorizer; tier 2 under operator-attested
+// schedule). See internal/verify/caveats.go for tier definitions.
+func printAcceptCaveat(w io.Writer, opts verify.VerifyOptions) {
+	caveat := verify.AcceptanceCaveatWithOptions(opts)
+	if caveat == "" {
+		// Tier 3 — locally derived; future phase. Skip the line
+		// rather than emit a noisy empty caveat.
+		return
+	}
+	fmt.Fprintln(w, caveat)
 }
 
 // outcomeExitCode maps an Outcome to the documented exit-code matrix:

@@ -52,6 +52,11 @@ type Loop struct {
 	// per-iteration limits.
 	Policy verify.Policy
 
+	// Authorizer enables Branch 5b producer-auth checks when non-nil.
+	// nil keeps legacy Disabled-mode behavior (the per-tick log
+	// remains structurally identical for machine consumers).
+	Authorizer verify.ProducerAuthorizer
+
 	// Interval is the time between ticks. 10s is the natural cadence
 	// (one momentum). Setting to 0 falls back to the default.
 	Interval time.Duration
@@ -177,7 +182,14 @@ func (l *Loop) tick(ctx context.Context, state verify.HeaderState) (TickResult, 
 	for i, h := range headers {
 		heights[i] = h.Height
 	}
-	result, newState := verify.VerifyHeaders(headers, state, l.Policy)
+	opts := verify.VerifyOptions{Policy: l.Policy}
+	if l.Authorizer != nil {
+		opts.ProducerAuth = verify.ProducerAuthOptions{
+			Mode:       verify.ProducerAuthRequired,
+			Authorizer: l.Authorizer,
+		}
+	}
+	result, newState := verify.VerifyHeadersWithOptions(headers, state, opts)
 	return TickResult{
 		Tip:            tip,
 		Target:         target,
