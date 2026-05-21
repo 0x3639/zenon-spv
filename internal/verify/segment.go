@@ -48,9 +48,16 @@ func (r SegmentResult) Worst() Outcome {
 //         require empty PublicKey AND empty Signature; skip ed25519.
 //       - User addresses: require chain.PubKeyToAddress(PublicKey) ==
 //         Address, then verify Ed25519 over the recomputed hash.
-//  4. For blocks beyond the first, verifies linkage:
-//     block[k].PreviousHash == block[k-1].BlockHash and
-//     block[k].Height == block[k-1].Height + 1. Otherwise REJECT.
+//  4. For blocks beyond the first, verifies linkage against a
+//     locally-verified parent anchor. The anchor advances ONLY after
+//     a block's final result is ACCEPT, so a forged BlockHash on a
+//     rejected block cannot become an apparent parent for the next
+//     block. A block whose previous segment entry did not ACCEPT
+//     short-circuits to ReasonParentNotAccepted (REJECT cascades to
+//     REJECT, REFUSED cascades to REFUSED — the gap persists). When
+//     the parent did ACCEPT, the child must satisfy
+//     block[k].PreviousHash == verified_parent_hash and
+//     block[k].Height == verified_parent_height + 1.
 //  5. Looks up CommitmentEvidence(s) in commitments whose Target ==
 //     block.AccountHeader. The bundle may carry multiple candidates
 //     (rare; legitimate during a reorg attestation): each is tried,
@@ -89,9 +96,41 @@ func VerifySegment(state HeaderState, segment proof.AccountSegment, commitments 
 	}
 	out := SegmentResult{Blocks: make([]Result, len(segment.Blocks))}
 	lookup := indexCommitments(commitments)
-	var prev *chain.AccountBlock
+
+	// Verified parent linkage state. parentHash advances only when a
+	// block's final outcome is ACCEPT, so a forged BlockHash on a
+	// rejected block cannot become an apparent parent for the next
+	// block.
+	var (
+		parentHash      chain.Hash
+		parentHeight    uint64
+		haveParent      bool
+		previousOutcome = OutcomeAccept // sentinel; i > 0 is the real gate
+	)
 	for i := range segment.Blocks {
 		b := &segment.Blocks[i]
+
+		// Parent gate: a block following a non-ACCEPT parent in the
+		// segment cannot be part of the verified chain regardless of
+		// its own contents. REJECT cascades to REJECT, REFUSED
+		// cascades to REFUSED — the gap persists until the segment
+		// ends.
+		if i > 0 && previousOutcome != OutcomeAccept {
+			r := Result{
+				Reason:   ReasonParentNotAccepted,
+				Message:  fmt.Sprintf("previous block in segment did not ACCEPT (was %s)", previousOutcome),
+				FailedAt: i,
+			}
+			if previousOutcome == OutcomeRefused {
+				r.Outcome = OutcomeRefused
+			} else {
+				r.Outcome = OutcomeReject
+			}
+			out.Blocks[i] = r
+			previousOutcome = r.Outcome
+			continue
+		}
+
 		if b.Address != segment.Address {
 			out.Blocks[i] = Result{
 				Outcome:  OutcomeReject,
@@ -99,7 +138,7 @@ func VerifySegment(state HeaderState, segment proof.AccountSegment, commitments 
 				Message:  fmt.Sprintf("block address %x != segment address %x", b.Address, segment.Address),
 				FailedAt: i,
 			}
-			prev = b
+			previousOutcome = OutcomeReject
 			continue
 		}
 		recomputed := b.ComputeHash()
@@ -110,7 +149,7 @@ func VerifySegment(state HeaderState, segment proof.AccountSegment, commitments 
 				Message:  fmt.Sprintf("recomputed=%x claimed=%x", recomputed, b.BlockHash),
 				FailedAt: i,
 			}
-			prev = b
+			previousOutcome = OutcomeReject
 			continue
 		}
 
@@ -127,25 +166,25 @@ func VerifySegment(state HeaderState, segment proof.AccountSegment, commitments 
 					Message:  fmt.Sprintf("embedded-contract address %x must carry empty pk/sig", b.Address),
 					FailedAt: i,
 				}
-				prev = b
+				previousOutcome = OutcomeReject
 				continue
 			}
 			// Embedded path: no signature to verify; fall through to linkage.
 		} else {
 			if len(b.PublicKey) == 0 {
 				out.Blocks[i] = Result{Outcome: OutcomeReject, Reason: ReasonPublicKeyMissing, FailedAt: i, Message: "missing ed25519 public key"}
-				prev = b
+				previousOutcome = OutcomeReject
 				continue
 			}
 			if len(b.Signature) == 0 {
 				out.Blocks[i] = Result{Outcome: OutcomeReject, Reason: ReasonSignatureMissing, FailedAt: i, Message: "missing ed25519 signature"}
-				prev = b
+				previousOutcome = OutcomeReject
 				continue
 			}
 			if len(b.PublicKey) != ed25519.PublicKeySize {
 				out.Blocks[i] = Result{Outcome: OutcomeReject, Reason: ReasonInvalidSignature, FailedAt: i,
 					Message: fmt.Sprintf("public key length %d != %d", len(b.PublicKey), ed25519.PublicKeySize)}
-				prev = b
+				previousOutcome = OutcomeReject
 				continue
 			}
 			if chain.PubKeyToAddress(b.PublicKey) != b.Address {
@@ -155,7 +194,7 @@ func VerifySegment(state HeaderState, segment proof.AccountSegment, commitments 
 					Message:  fmt.Sprintf("PubKeyToAddress(pk)=%x != block.Address=%x", chain.PubKeyToAddress(b.PublicKey), b.Address),
 					FailedAt: i,
 				}
-				prev = b
+				previousOutcome = OutcomeReject
 				continue
 			}
 			// B1: pass `recomputed[:]` rather than `b.BlockHash[:]` so
@@ -165,22 +204,24 @@ func VerifySegment(state HeaderState, segment proof.AccountSegment, commitments 
 			// removes the implicit precondition for future readers.
 			if !ed25519.Verify(ed25519.PublicKey(b.PublicKey), recomputed[:], b.Signature) {
 				out.Blocks[i] = Result{Outcome: OutcomeReject, Reason: ReasonInvalidSignature, FailedAt: i, Message: "ed25519 verify failed"}
-				prev = b
+				previousOutcome = OutcomeReject
 				continue
 			}
 		}
 
-		if prev != nil {
-			if b.PreviousHash != prev.BlockHash {
+		// Linkage against the verified parent anchor only — never
+		// against a wire-claimed BlockHash from an unaccepted block.
+		if haveParent {
+			if b.PreviousHash != parentHash {
 				out.Blocks[i] = Result{Outcome: OutcomeReject, Reason: ReasonBrokenLinkage, FailedAt: i,
-					Message: fmt.Sprintf("previous_hash=%x != prev block hash=%x", b.PreviousHash, prev.BlockHash)}
-				prev = b
+					Message: fmt.Sprintf("previous_hash=%x != verified parent hash=%x", b.PreviousHash, parentHash)}
+				previousOutcome = OutcomeReject
 				continue
 			}
-			if b.Height != prev.Height+1 {
+			if b.Height != parentHeight+1 {
 				out.Blocks[i] = Result{Outcome: OutcomeReject, Reason: ReasonHeightNonMonotonic, FailedAt: i,
-					Message: fmt.Sprintf("height=%d != prev+1=%d", b.Height, prev.Height+1)}
-				prev = b
+					Message: fmt.Sprintf("height=%d != verified parent height+1=%d", b.Height, parentHeight+1)}
+				previousOutcome = OutcomeReject
 				continue
 			}
 		}
@@ -193,15 +234,21 @@ func VerifySegment(state HeaderState, segment proof.AccountSegment, commitments 
 				Message:  fmt.Sprintf("no commitment for (addr=%x, height=%d, hash=%x)", ah.Address, ah.Height, ah.Hash),
 				FailedAt: i,
 			}
-			prev = b
+			previousOutcome = OutcomeRefused
 			continue
 		}
 		// F5: try all candidates; ACCEPT on the first that succeeds,
 		// otherwise return the most-severe (REJECT > REFUSED) result.
 		// A stale duplicate at an out-of-window height no longer masks
 		// valid in-window evidence.
-		out.Blocks[i] = bestCommitmentResult(state, candidates, policy, i)
-		prev = b
+		r := bestCommitmentResult(state, candidates, policy, i)
+		out.Blocks[i] = r
+		previousOutcome = r.Outcome
+		if r.Outcome == OutcomeAccept {
+			parentHash = recomputed
+			parentHeight = b.Height
+			haveParent = true
+		}
 	}
 	return out
 }

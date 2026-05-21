@@ -54,6 +54,7 @@ const (
 	ReasonPublicKeyAddressMismatch     // F1: chain.PubKeyToAddress(block.PublicKey) != block.Address
 	ReasonEmbeddedMustNotSign          // F1: embedded-contract block carries non-empty PublicKey or Signature
 	ReasonInsufficientFinality         // F2: tip.Height < evidence.Height + policy.W (W headers past target)
+	ReasonParentNotAccepted            // Segment linkage: previous block in the segment did not ACCEPT, so this block cannot be part of the verified chain
 )
 
 // String returns a stable, snake-case-equivalent name for serialization.
@@ -99,6 +100,8 @@ func (r ReasonCode) String() string {
 		return "ReasonEmbeddedMustNotSign"
 	case ReasonInsufficientFinality:
 		return "ReasonInsufficientFinality"
+	case ReasonParentNotAccepted:
+		return "ReasonParentNotAccepted"
 	default:
 		return fmt.Sprintf("ReasonCode(%d)", int(r))
 	}
