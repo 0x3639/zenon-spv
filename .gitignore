@@ -1,6 +1,9 @@
 # Binaries
 /zenon-spv
 /fetch-bundle
+/derive-checkpoints
+/derive-producer-schedule
+/verify-mainnet-genesis
 /dist/
 /bin/
 
