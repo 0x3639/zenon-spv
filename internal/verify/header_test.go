@@ -225,6 +225,97 @@ func TestHeaderState_AppendEvictsAtCapacity(t *testing.T) {
 	}
 }
 
+func TestHeaderState_HeaderAtHeight_FirstMiddleLast(t *testing.T) {
+	genesis, headers, _ := buildChain(t, 6)
+	state := NewHeaderState(genesis, Policy{W: WindowLow})
+	for _, h := range headers {
+		state.Append(h)
+	}
+	for _, idx := range []int{0, len(headers) / 2, len(headers) - 1} {
+		got, ok := state.HeaderAtHeight(headers[idx].Height)
+		if !ok {
+			t.Errorf("idx=%d (height %d): expected hit, got miss", idx, headers[idx].Height)
+			continue
+		}
+		if got.HeaderHash != headers[idx].HeaderHash {
+			t.Errorf("idx=%d: returned wrong header (hash mismatch)", idx)
+		}
+	}
+}
+
+func TestHeaderState_HeaderAtHeight_OutsideRangeMisses(t *testing.T) {
+	genesis, headers, _ := buildChain(t, 6)
+	state := NewHeaderState(genesis, Policy{W: WindowLow})
+	for _, h := range headers {
+		state.Append(h)
+	}
+	if _, ok := state.HeaderAtHeight(headers[0].Height - 1); ok {
+		t.Error("expected miss below first retained height")
+	}
+	if _, ok := state.HeaderAtHeight(headers[len(headers)-1].Height + 1); ok {
+		t.Error("expected miss above last retained height")
+	}
+	// Far-out queries must not panic on the offset arithmetic.
+	if _, ok := state.HeaderAtHeight(^uint64(0)); ok {
+		t.Error("expected miss for max-uint64 height")
+	}
+}
+
+func TestHeaderState_HeaderAtHeight_EmptyState(t *testing.T) {
+	state := NewHeaderState(GenesisTrustRoot{Height: 1}, Policy{W: WindowLow})
+	if _, ok := state.HeaderAtHeight(1); ok {
+		t.Error("empty state must miss every query")
+	}
+}
+
+func TestHeaderState_HeaderAtHeight_NonContiguousReturnsFalse(t *testing.T) {
+	// Construct a malformed state with a height gap. Append maintains
+	// contiguity by construction, so we build the window manually.
+	state := HeaderState{
+		Genesis:  GenesisTrustRoot{ChainID: 1, Height: 0},
+		Capacity: 4,
+		RetainedWindow: []chain.Header{
+			{Height: 10, HeaderHash: chain.Hash{0x01}},
+			{Height: 12, HeaderHash: chain.Hash{0x02}}, // gap at 11
+			{Height: 13, HeaderHash: chain.Hash{0x03}},
+		},
+	}
+	// Offset arithmetic for height 11 computes window[1].Height=12,
+	// which disagrees with the query — defensive guard returns false.
+	if got, ok := state.HeaderAtHeight(11); ok {
+		t.Errorf("non-contiguous window: expected miss at gap, got %+v", got)
+	}
+	// Heights past the gap also collide on offset arithmetic
+	// (offset for 13 is 3 from the malformed first-height anchor,
+	// but len(window)=3), so they miss as well. This is intentional:
+	// once contiguity is broken, refuse the entire window rather
+	// than silently returning a header at the wrong offset.
+	if _, ok := state.HeaderAtHeight(12); ok {
+		t.Error("non-contiguous window past gap: expected miss")
+	}
+}
+
+func TestHeaderState_HeaderAtHeight_AfterEvictionAdvancesFirst(t *testing.T) {
+	// After FIFO eviction, RetainedWindow[0].Height moves forward.
+	// The offset arithmetic must use the CURRENT first height, not
+	// the original anchor.
+	genesis, headers, _ := buildChain(t, 10)
+	policy := Policy{W: 4} // capacity = W+1 = 5
+	state := NewHeaderState(genesis, policy)
+	for _, h := range headers {
+		state.Append(h)
+	}
+	// Oldest retained = headers[5]; querying headers[0] must miss.
+	if _, ok := state.HeaderAtHeight(headers[0].Height); ok {
+		t.Errorf("evicted height %d should miss", headers[0].Height)
+	}
+	// Querying headers[5] (now the oldest retained) must hit.
+	got, ok := state.HeaderAtHeight(headers[5].Height)
+	if !ok || got.HeaderHash != headers[5].HeaderHash {
+		t.Errorf("oldest retained height %d should hit, got %+v ok=%v", headers[5].Height, got, ok)
+	}
+}
+
 func TestHeaderState_Cover(t *testing.T) {
 	genesis, headers, _ := buildChain(t, 4)
 	state := NewHeaderState(genesis, Policy{W: 4})

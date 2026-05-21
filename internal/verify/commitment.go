@@ -45,7 +45,7 @@ import (
 // (NG1) or that this is the only block at that (address, height) on
 // the canonical chain (NG6). Effect-equivalence only.
 func VerifyCommitment(state HeaderState, evidence proof.CommitmentEvidence, policy Policy) Result {
-	header, ok := findHeaderAtHeight(state, evidence.Height)
+	header, ok := state.HeaderAtHeight(evidence.Height)
 	if !ok {
 		return Result{
 			Outcome:  OutcomeRefused,
@@ -118,15 +118,6 @@ func VerifyCommitments(state HeaderState, batch []proof.CommitmentEvidence, poli
 		out[i] = VerifyCommitment(state, e, policy)
 	}
 	return out
-}
-
-func findHeaderAtHeight(state HeaderState, h uint64) (chain.Header, bool) {
-	for _, hdr := range state.RetainedWindow {
-		if hdr.Height == h {
-			return hdr, true
-		}
-	}
-	return chain.Header{}, false
 }
 
 // flatContentHash mirrors MomentumContent.Hash —

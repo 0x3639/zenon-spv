@@ -8,11 +8,6 @@ import (
 	"github.com/0x3639/zenon-spv/internal/proof"
 )
 
-// findHeaderAtHeight is no longer used by VerifySegment after the
-// MomentumAcknowledged-vs-committing-momentum redesign, but Phase 2's
-// VerifyCommitment still uses it via commitment.go.
-var _ = findHeaderAtHeight
-
 // SegmentResult is one Result per block in the segment, in input order.
 // REJECT or REFUSED on any block does NOT short-circuit subsequent
 // blocks — a wallet wants to know which blocks were proven.

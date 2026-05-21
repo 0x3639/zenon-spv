@@ -167,6 +167,51 @@ func TestLoadOrInit_PolicyShrinkTruncates(t *testing.T) {
 	}
 }
 
+// TestLoadOrInit_PolicyShrinkKeepsNewestTail explicitly exercises
+// the tail-preserving truncation. The existing
+// TestLoadOrInit_PolicyShrinkTruncates uses a fixture sized at
+// exactly the new capacity (no truncation actually happens), so it
+// only covers the no-op path. This test builds a 6-entry retained
+// window and shrinks the policy to W=2 (capacity=3), and asserts
+// that the kept entries are the NEWEST three, not the oldest.
+func TestLoadOrInit_PolicyShrinkKeepsNewestTail(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	genesis := GenesisTrustRoot{ChainID: 1, Height: 1, HeaderHash: chain.Hash{0x9e}}
+	state := NewHeaderState(genesis, Policy{W: 6}) // capacity = 7
+	for i := 0; i < 6; i++ {
+		state.Append(chain.Header{
+			Version: 1,
+			Height:  uint64(2 + i),
+			// Distinct HeaderHash per entry so we can identify which
+			// three survived truncation.
+			HeaderHash: chain.Hash{byte(i + 1)},
+		})
+	}
+	if err := SaveHeaderState(path, state); err != nil {
+		t.Fatal(err)
+	}
+
+	resumed, err := LoadOrInit(path, state.Genesis, Policy{W: 2}) // capacity = 3
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resumed.RetainedWindow) != 3 {
+		t.Fatalf("expected retained=3 after shrink, got %d", len(resumed.RetainedWindow))
+	}
+	if resumed.Capacity != 3 {
+		t.Errorf("expected capacity=3 after shrink, got %d", resumed.Capacity)
+	}
+	// Newest three were heights 5..7 (entries 3..5 in original);
+	// truncation must keep those, not 2..4.
+	wantHeights := []uint64{5, 6, 7}
+	for i, want := range wantHeights {
+		if resumed.RetainedWindow[i].Height != want {
+			t.Errorf("retained[%d].Height = %d, want %d (truncation didn't keep tail)",
+				i, resumed.RetainedWindow[i].Height, want)
+		}
+	}
+}
+
 func TestSaveHeaderState_AtomicRenameLeavesNoTemp(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "state.json")
