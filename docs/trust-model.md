@@ -54,9 +54,10 @@ For a verified bundle:
    the CLI ACCEPT caveat names and Branch 5 of
    [`peer-review-plan.md`](peer-review-plan.md) closes.
 
-2. **Bundle resource bounds.** A multi-GB hostile bundle is read in
-   full before verification fails. Tracked as Branch 2 of the
-   fix plan.
+_(Bundle resource bounds — previously listed here — are now
+enforced via `Policy.Max*` defaults and `proof.LoadHeaderBundleBounded`.
+See `docs/resource-bound-measurements.md` for the empirical
+rationale.)_
 
 ### Structural (intentional NG by spec)
 

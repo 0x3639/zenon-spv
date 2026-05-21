@@ -52,8 +52,10 @@ Account-segment layer (Phase 3):
 - [x] Watch loop with persist-before-advance and fatal-after-N
       save-failure — implemented (`internal/syncer/syncer.go`,
       Branch 3 fix).
-- [ ] Measure σ_B, σ_π, σ_H from real samples — covered by Branch 2a
-      of the fix plan.
+- [~] Measure σ_B, σ_π, σ_H from real samples — Branch 2a shipped a
+      pragmatic header-size sample
+      (`docs/resource-bound-measurements.md`); the full spec §10
+      σ characterization is still deferred.
 - [ ] Benchmark `C_verify` on target platforms — deferred.
 - [ ] Simulated network partition test — deferred.
 - [ ] Policy-window validation against observed reorg data — deferred.
@@ -86,10 +88,13 @@ fix-plan branch where applicable.
    recomputed; an SPV cannot recompute state-transition hashes without
    re-executing transitions.
 
-4. **Resource bounds not enforced.** `MaxHeaderBytes` is declared but
-   unused; bundle bytes, commitment evidence size, and account segment
-   size have no caps. A hostile peer can flood the verifier. Tracked
-   as **Branch 2** in [`peer-review-plan.md`](peer-review-plan.md).
+_(Item 4 — resource bounds — was previously listed here.
+Enforcement landed in Branch 2: `Policy.Max*` defaults cap bundle
+bytes, header count, per-commitment and aggregate flat evidence
+members, and per-segment and aggregate segment blocks.
+`proof.LoadHeaderBundleBounded` uses `io.LimitReader` so an
+oversized file is rejected without being read in full. Empirical
+defaults live in `docs/resource-bound-measurements.md`.)_
 
 ## Adversarial-review fixes (2026-04-28)
 
@@ -104,5 +109,5 @@ closed; see those files for the per-finding writeup.
 The 2026-05 peer review (`docs/peer-review.md`) surfaced eleven new
 items. Tracked in [`peer-review-plan.md`](peer-review-plan.md) as
 Branches 1–9; Branches 1, 3, and 4 ship in this batch. Producer-set
-verification (Branch 5) and resource bounds (Branch 2) are the next
-priorities.
+verification (Branch 5) and resource bounds (Branch 2) have landed
+on local main; the remaining items are refactors (Branches 6–9).

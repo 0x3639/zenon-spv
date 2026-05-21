@@ -56,8 +56,8 @@ What that means in practice for callers:
 - ✅ **Phase 4** — header-state persistence + offline resume.
 - ✅ **Phase 5a** — verifier-as-service watch loop with multi-peer fetch.
 - ✅ **Trust hardening** — embedded mainnet genesis + multi-peer genesis tool + embedded checkpoint list.
-- ⏳ **Resource bounds enforcement** — Branch 2 of the active fix plan.
-- ⏳ **Producer-set / quorum verification** — Branch 5 of the active fix plan.
+- ✅ **Resource bounds enforcement** — `Policy.Max*` defaults + `proof.LoadHeaderBundleBounded`; bundle bytes, header count, per-commitment and aggregate flat evidence members, per-segment and aggregate segment blocks all capped. See `docs/resource-bound-measurements.md`.
+- ✅ **Producer-set verification (opt-in)** — per-momentum (height + timestamp + producing-address) schedule wired through `--schedule`; tier-2 caveat under operator attestation. Local derivation from chain-observed Pillar register/revoke events remains a future phase (tier 3).
 - ⏳ **Phase 6** — full CLI conformance harness.
 - ⏳ **libp2p / WebRTC transport** — later.
 

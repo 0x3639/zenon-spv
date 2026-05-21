@@ -1,0 +1,132 @@
+package main
+
+import (
+	"testing"
+
+	"github.com/0x3639/zenon-spv/internal/chain"
+	"github.com/0x3639/zenon-spv/internal/proof"
+	"github.com/0x3639/zenon-spv/internal/verify"
+)
+
+// TestPreflightBundleBounds_AggregateFlatEvidenceCap covers the
+// n × m flood that per-commitment MaxFlatEvidenceMembers alone
+// misses: many commitments, each under the per-item cap, but the
+// aggregate total over MaxTotalFlatEvidenceMembers.
+func TestPreflightBundleBounds_AggregateFlatEvidenceCap(t *testing.T) {
+	// 3 commitments × 4 sorted headers each = 12 total members.
+	// Per-item cap is 100 (well above 4), aggregate cap is 10 (below 12).
+	makeAH := func(seed byte) chain.AccountHeader {
+		return chain.AccountHeader{Address: chain.Address{seed}, Height: 1, Hash: chain.Hash{seed}}
+	}
+	commitment := func(seed byte) proof.CommitmentEvidence {
+		flat := &proof.FlatContentEvidence{SortedHeaders: []chain.AccountHeader{
+			makeAH(seed), makeAH(seed + 1), makeAH(seed + 2), makeAH(seed + 3),
+		}}
+		return proof.CommitmentEvidence{
+			Height: 100,
+			Target: makeAH(seed),
+			Flat:   flat,
+		}
+	}
+	bundle := proof.HeaderBundle{
+		Commitments: []proof.CommitmentEvidence{commitment(0x10), commitment(0x20), commitment(0x30)},
+	}
+	policy := verify.Policy{
+		MaxCommitments:              100,
+		MaxFlatEvidenceMembers:      100, // per-item cap not exercised
+		MaxTotalFlatEvidenceMembers: 10,  // aggregate fails: 12 > 10
+	}
+	r := preflightBundleBounds(bundle, policy)
+	if r.Outcome != verify.OutcomeRefused || r.Reason != verify.ReasonOversizedEvidence {
+		t.Fatalf("expected REFUSED/ReasonOversizedEvidence, got %s", r)
+	}
+}
+
+// TestPreflightBundleBounds_AggregateSegmentBlocksCap is the
+// segment-side analog: many small segments tipping over
+// MaxTotalSegmentBlocks while each fits under MaxSegmentBlocks.
+func TestPreflightBundleBounds_AggregateSegmentBlocksCap(t *testing.T) {
+	segment := func(seed byte) proof.AccountSegment {
+		return proof.AccountSegment{
+			Address: chain.Address{seed},
+			Blocks: []chain.AccountBlock{
+				{Height: 1}, {Height: 2}, {Height: 3}, {Height: 4},
+			},
+		}
+	}
+	bundle := proof.HeaderBundle{
+		Segments: []proof.AccountSegment{segment(0x10), segment(0x20), segment(0x30)},
+	}
+	policy := verify.Policy{
+		MaxSegments:           100,
+		MaxSegmentBlocks:      100, // per-segment cap not exercised
+		MaxTotalSegmentBlocks: 10,  // aggregate fails: 12 > 10
+	}
+	r := preflightBundleBounds(bundle, policy)
+	if r.Outcome != verify.OutcomeRefused || r.Reason != verify.ReasonOversizedSegment {
+		t.Fatalf("expected REFUSED/ReasonOversizedSegment, got %s", r)
+	}
+}
+
+// TestPreflightBundleBounds_AggregateCapsDoNotFireUnderCap is the
+// happy-path check: a bundle whose aggregates are under both per-item
+// AND total caps preflight-passes cleanly.
+func TestPreflightBundleBounds_AggregateCapsDoNotFireUnderCap(t *testing.T) {
+	bundle := proof.HeaderBundle{
+		Commitments: []proof.CommitmentEvidence{{
+			Height: 100,
+			Target: chain.AccountHeader{Address: chain.Address{0x01}, Height: 1},
+			Flat: &proof.FlatContentEvidence{SortedHeaders: []chain.AccountHeader{
+				{Address: chain.Address{0x01}, Height: 1},
+			}},
+		}},
+		Segments: []proof.AccountSegment{{
+			Address: chain.Address{0x01},
+			Blocks:  []chain.AccountBlock{{Height: 1}},
+		}},
+	}
+	policy := verify.PolicyForTier("low")
+	r := preflightBundleBounds(bundle, policy)
+	if r.Outcome != verify.OutcomeAccept {
+		t.Fatalf("expected ACCEPT under defaults, got %s", r)
+	}
+}
+
+// TestPreflightBundleBounds_PerBundleCommitmentCount also covers
+// MaxCommitments — the per-bundle count cap that lives in the same
+// preflight. The per-item caps (FlatEvidenceMembers, SegmentBlocks)
+// have direct verifier-level tests in internal/verify; this layer
+// also gets exercised here for completeness.
+func TestPreflightBundleBounds_PerBundleCommitmentCount(t *testing.T) {
+	commitments := make([]proof.CommitmentEvidence, 5)
+	for i := range commitments {
+		commitments[i] = proof.CommitmentEvidence{
+			Height: 100,
+			Target: chain.AccountHeader{Address: chain.Address{byte(i)}, Height: 1},
+		}
+	}
+	bundle := proof.HeaderBundle{Commitments: commitments}
+	policy := verify.Policy{MaxCommitments: 3}
+	r := preflightBundleBounds(bundle, policy)
+	if r.Outcome != verify.OutcomeRefused || r.Reason != verify.ReasonOversizedEvidence {
+		t.Fatalf("expected REFUSED/ReasonOversizedEvidence, got %s", r)
+	}
+}
+
+// TestPreflightBundleBounds_PerBundleSegmentCount mirrors the
+// above for MaxSegments.
+func TestPreflightBundleBounds_PerBundleSegmentCount(t *testing.T) {
+	segments := make([]proof.AccountSegment, 5)
+	for i := range segments {
+		segments[i] = proof.AccountSegment{
+			Address: chain.Address{byte(i)},
+			Blocks:  []chain.AccountBlock{{Height: 1}},
+		}
+	}
+	bundle := proof.HeaderBundle{Segments: segments}
+	policy := verify.Policy{MaxSegments: 3}
+	r := preflightBundleBounds(bundle, policy)
+	if r.Outcome != verify.OutcomeRefused || r.Reason != verify.ReasonOversizedSegment {
+		t.Fatalf("expected REFUSED/ReasonOversizedSegment, got %s", r)
+	}
+}

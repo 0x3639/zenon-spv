@@ -21,7 +21,6 @@ This is **not a full Zenon light client.** See `docs/trust-model.md` for what AC
 
 - **Producer-set / quorum signature verification.** Headers are checked for valid Ed25519 signature against a claimed producer pubkey, but membership of that pubkey in the active Pillar set at the header's height is not yet enforced. ACCEPT therefore means *local consistency under the configured trust root and checkpoints*, not full chain validity. Tracked as Branch 5 in `docs/peer-review-plan.md`.
 - **Local derivation of producer-set transitions from embedded-contract state.** Deferred phase; a release-time operator-attested schedule is the bridge.
-- **Resource bound enforcement on bundle bytes, segment blocks, and commitment evidence size.** Tracked as Branch 2 in `docs/peer-review-plan.md`.
 - **libp2p / WebRTC peer transport.** The current transport is HTTPS JSON-RPC.
 
 Every `ACCEPT` printed by the CLI is accompanied by a visible caveat naming the open trust assumption.
