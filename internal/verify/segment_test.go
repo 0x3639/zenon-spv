@@ -271,6 +271,149 @@ func TestAttack_EmptySegmentRefuses(t *testing.T) {
 	}
 }
 
+// embeddedSegmentFixture builds a state + single-block segment +
+// matching commitment for an embedded-contract address (the first
+// byte of Address is chain.ContractAddrByte). Mirrors the shape of
+// segmentFixture so the embedded-only tests below stay readable;
+// callers can mutate the block's PublicKey/Signature to exercise
+// the F1 embedded-must-not-sign path.
+func embeddedSegmentFixture(t *testing.T) (HeaderState, proof.AccountSegment, []proof.CommitmentEvidence) {
+	t.Helper()
+	const chainID = uint64(3)
+	genesisHeight := uint64(100)
+	genesisHash := chain.Hash{0x47, 0x45, 0x4e, 0x45, 0x53, 0x49, 0x53}
+	genesis := GenesisTrustRoot{ChainID: chainID, Height: genesisHeight, HeaderHash: genesisHash}
+
+	// Embedded-contract address: first byte = ContractAddrByte. The
+	// remaining bytes are arbitrary (the verifier only checks the
+	// first-byte tag for embedded-vs-user, per
+	// chain.Address.IsEmbeddedAddress).
+	var addr chain.Address
+	addr[0] = chain.ContractAddrByte
+	addr[1] = 0xee
+
+	// One embedded block at height 1, no pk/sig per F1.
+	momentumAck := chain.HashHeight{Height: 103}
+	block := chain.AccountBlock{
+		Version:              1,
+		ChainIdentifier:      chainID,
+		BlockType:            chain.BlockTypeContractSend,
+		PreviousHash:         chain.Hash{},
+		Height:               1,
+		MomentumAcknowledged: momentumAck,
+		Address:              addr,
+		ToAddress:            chain.Address{0x99},
+		Amount:               big.NewInt(0),
+		TokenStandard:        chain.TokenStandard{0x01, 0x02, 0x03},
+		Nonce:                chain.Nonce{0xc1, 0xc2},
+		// PublicKey and Signature are deliberately empty (F1).
+	}
+	block.BlockHash = block.ComputeHash()
+
+	committed := []chain.AccountHeader{{Address: addr, Height: 1, Hash: block.BlockHash}}
+	committedContentHash := chain.MomentumContentHash(committed)
+
+	// Build a 9-momentum chain with the third committing this content.
+	// Same shape and signer as segmentFixture so the F2 post-target
+	// depth check passes at height 103 with WindowLow=6.
+	momentumPriv := ed25519.NewKeyFromSeed(make([]byte, ed25519.SeedSize))
+	momentumPub := momentumPriv.Public().(ed25519.PublicKey)
+	headers := make([]chain.Header, 9)
+	prev := genesisHash
+	for i := 0; i < 9; i++ {
+		h := chain.Header{
+			Version:         1,
+			ChainIdentifier: chainID,
+			PreviousHash:    prev,
+			Height:          genesisHeight + uint64(i+1),
+			TimestampUnix:   uint64(1700000000 + 10*(i+1)),
+			DataHash:        chain.Hash{byte(i + 1)},
+			ContentHash:     chain.Hash{0xc0, byte(i)},
+			ChangesHash:     chain.Hash{0xcc, byte(i)},
+			PublicKey:       append([]byte{}, momentumPub...),
+		}
+		if i == 2 {
+			h.ContentHash = committedContentHash
+		}
+		h.HeaderHash = h.ComputeHash()
+		h.Signature = ed25519.Sign(momentumPriv, h.HeaderHash[:])
+		headers[i] = h
+		prev = h.HeaderHash
+	}
+
+	policy := Policy{W: WindowLow}
+	state := NewHeaderState(genesis, policy)
+	res, newState := VerifyHeaders(headers, state, policy)
+	if res.Outcome != OutcomeAccept {
+		t.Fatalf("setup VerifyHeaders failed: %s", res)
+	}
+
+	segment := proof.AccountSegment{Address: addr, Blocks: []chain.AccountBlock{block}}
+	flat := &proof.FlatContentEvidence{SortedHeaders: append([]chain.AccountHeader{}, committed...)}
+	commitments := []proof.CommitmentEvidence{
+		{Height: 103, Target: committed[0], Flat: flat},
+	}
+	return newState, segment, commitments
+}
+
+// TestVerifySegment_EmbeddedBlockEmptyPkSigAccepts is the canonical
+// F1 happy path: an embedded-contract block with empty PublicKey
+// and empty Signature, backed by a valid commitment, ACCEPTs.
+// go-zenon signs embedded-contract blocks implicitly via the
+// producer momentum (no per-block keypair); the SPV must match.
+func TestVerifySegment_EmbeddedBlockEmptyPkSigAccepts(t *testing.T) {
+	state, segment, commitments := embeddedSegmentFixture(t)
+	res := VerifySegment(state, segment, commitments, segmentFixturePolicy())
+	if len(res.Blocks) != 1 {
+		t.Fatalf("expected 1 block result, got %d", len(res.Blocks))
+	}
+	if res.Blocks[0].Outcome != OutcomeAccept || res.Blocks[0].Reason != ReasonOK {
+		t.Errorf("embedded block with empty pk/sig: want ACCEPT/OK, got %s", res.Blocks[0])
+	}
+}
+
+// TestVerifySegment_EmbeddedBlockWithPublicKeyRejects locks in F1:
+// an embedded-contract address carrying a non-empty PublicKey is
+// REJECT/ReasonEmbeddedMustNotSign. This catches a peer that
+// injects a producer key into an embedded block to attack
+// authorization downstream.
+func TestVerifySegment_EmbeddedBlockWithPublicKeyRejects(t *testing.T) {
+	state, segment, commitments := embeddedSegmentFixture(t)
+	// Inject a non-empty PublicKey. We don't re-sign or recompute the
+	// block hash because the EmbeddedMustNotSign check fires BEFORE
+	// the linkage/commitment checks — the pk presence alone rejects.
+	// Recompute the block hash so the InvalidHash check (which runs
+	// first) doesn't fire and mask the embedded-must-not-sign result.
+	segment.Blocks[0].PublicKey = []byte{0x01, 0x02, 0x03}
+	segment.Blocks[0].BlockHash = segment.Blocks[0].ComputeHash()
+
+	res := VerifySegment(state, segment, commitments, segmentFixturePolicy())
+	if len(res.Blocks) != 1 {
+		t.Fatalf("expected 1 block result, got %d", len(res.Blocks))
+	}
+	if res.Blocks[0].Outcome != OutcomeReject || res.Blocks[0].Reason != ReasonEmbeddedMustNotSign {
+		t.Errorf("embedded block with PublicKey: want REJECT/EmbeddedMustNotSign, got %s", res.Blocks[0])
+	}
+}
+
+// TestVerifySegment_EmbeddedBlockWithSignatureRejects is the
+// signature-only variant of the above. An embedded address with a
+// non-empty Signature (but empty PublicKey) is still
+// REJECT/ReasonEmbeddedMustNotSign — both fields must be empty.
+func TestVerifySegment_EmbeddedBlockWithSignatureRejects(t *testing.T) {
+	state, segment, commitments := embeddedSegmentFixture(t)
+	segment.Blocks[0].Signature = []byte{0xaa, 0xbb}
+	// Block hash doesn't include Signature, so no recompute needed.
+
+	res := VerifySegment(state, segment, commitments, segmentFixturePolicy())
+	if len(res.Blocks) != 1 {
+		t.Fatalf("expected 1 block result, got %d", len(res.Blocks))
+	}
+	if res.Blocks[0].Outcome != OutcomeReject || res.Blocks[0].Reason != ReasonEmbeddedMustNotSign {
+		t.Errorf("embedded block with Signature: want REJECT/EmbeddedMustNotSign, got %s", res.Blocks[0])
+	}
+}
+
 func TestSegmentResult_WorstSeverityRanking(t *testing.T) {
 	cases := []struct {
 		name string

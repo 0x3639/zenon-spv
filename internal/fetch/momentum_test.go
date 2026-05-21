@@ -2,8 +2,10 @@ package fetch
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -129,6 +131,84 @@ func TestClient_FetchByHeight(t *testing.T) {
 	}
 	if len(got) != 2 || got[0].Height != 10 || got[1].Height != 11 {
 		t.Fatalf("unexpected: %+v", got)
+	}
+}
+
+// momentumWithDataPreimage builds an rpcMomentum whose `data` field
+// encodes the given preimage and whose top-level `hash` field equals
+// what convertAndVerifyDetailed should locally recompute. Returns
+// the rpc shape and the truthful header hash so callers can mutate
+// fields independently.
+func momentumWithDataPreimage(t *testing.T, height uint64, preimage []byte) (map[string]any, chain.Hash) {
+	t.Helper()
+	h := chain.Header{
+		Version:         1,
+		ChainIdentifier: 1,
+		Height:          height,
+		TimestampUnix:   1700000000 + height,
+	}
+	h.DataHash = sha3sum(preimage)
+	h.ContentHash = sha3sum(nil)
+	h.HeaderHash = h.ComputeHash()
+	return map[string]any{
+		"version":         1,
+		"chainIdentifier": 1,
+		"hash":            hashHex(h.HeaderHash),
+		"previousHash":    hashHex(h.PreviousHash),
+		"height":          height,
+		"timestamp":       h.TimestampUnix,
+		"data":            base64.StdEncoding.EncodeToString(preimage),
+		"content":         []any{},
+		"changesHash":     hashHex(h.ChangesHash),
+		"publicKey":       "",
+		"signature":       "",
+	}, h.HeaderHash
+}
+
+// TestConvertAndVerifyDetailed_TamperedDataPreimageRejects locks in
+// the fetch-boundary invariant that raw RPC `data` is hashed
+// LOCALLY into DataHash, with any peer-supplied pre-hash ignored. A
+// peer that serves a valid-claimed-hash momentum but mutates the
+// `data` preimage cannot escape detection — the locally-computed
+// DataHash diverges, the recomputed header hash diverges, and the
+// convert path returns ErrHashMismatch rather than a constructed
+// chain.Header.
+//
+// This is the F-class wire-tampering defense the plan §8 calls for
+// at the fetch boundary (chain.Header intentionally carries a
+// pre-hashed DataHash field; trust must be at the parser, not
+// downstream).
+func TestConvertAndVerifyDetailed_TamperedDataPreimageRejects(t *testing.T) {
+	preimage := []byte("genuine momentum payload bytes")
+	m, _ := momentumWithDataPreimage(t, 42, preimage)
+
+	// Sanity: the truthful momentum round-trips cleanly.
+	var truthful rpcMomentum
+	raw, _ := json.Marshal(m)
+	if err := json.Unmarshal(raw, &truthful); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := convertAndVerifyDetailed(truthful); err != nil {
+		t.Fatalf("truthful fixture should convert: %v", err)
+	}
+
+	// Now mutate the `data` to a different preimage while leaving
+	// the top-level claimed `hash` UNCHANGED. The local DataHash
+	// recompute will produce a different value, header recompute
+	// disagrees with the claimed hash, convert errors.
+	tampered := m
+	tampered["data"] = base64.StdEncoding.EncodeToString([]byte("attacker-substituted payload"))
+	raw2, _ := json.Marshal(tampered)
+	var rm rpcMomentum
+	if err := json.Unmarshal(raw2, &rm); err != nil {
+		t.Fatal(err)
+	}
+	_, err := convertAndVerifyDetailed(rm)
+	if err == nil {
+		t.Fatal("tampered data preimage: expected hash mismatch, got nil")
+	}
+	if !errors.Is(err, ErrHashMismatch) {
+		t.Errorf("expected ErrHashMismatch, got %v", err)
 	}
 }
 

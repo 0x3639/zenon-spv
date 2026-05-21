@@ -111,6 +111,16 @@ var ErrHashMismatch = errors.New("momentum hash recomputed from signed envelope 
 // each AccountHeader in Content. A peer that lied about the momentum
 // hash, the content hash, or any address in Content will surface as
 // an error, never as a returned DetailedHeader.
+//
+// Important: chain.Header.DataHash is derived LOCALLY by hashing the
+// raw `data` preimage; the wire format does not carry a separate
+// DataHash field, and any peer-supplied pre-hash would be ignored
+// anyway. A peer that mutates the raw `data` while leaving the
+// top-level claimed `hash` unchanged still fails this function
+// (locally-computed DataHash diverges → recomputed momentum hash
+// diverges → ErrHashMismatch). The same property holds for ContentHash,
+// which is recomputed via chain.MomentumContentHash from the decoded
+// account headers.
 func convertAndVerifyDetailed(m rpcMomentum) (DetailedHeader, error) {
 	prev, err := decodeHex32(m.PreviousHash)
 	if err != nil {

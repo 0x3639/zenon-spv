@@ -1,7 +1,9 @@
 package fetch
 
 import (
+	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"os"
 	"strings"
 	"testing"
@@ -44,6 +46,59 @@ func TestAccountBlock_RecomputeMainnetHash(t *testing.T) {
 	}
 	if string(gotHex) != wantHash {
 		t.Errorf("hash: got %s, want %s", string(gotHex), wantHash)
+	}
+}
+
+// TestConvertAndVerifyAccountBlock_TamperedDataPreimageRejects is
+// the account-block analog of momentum's tampered-data test: the
+// rpcAccountBlock carries `data` as a base64 preimage, the convert
+// path hashes it LOCALLY into chain.AccountBlock.DataHash, and the
+// block-hash recompute uses that local value. A peer that mutates
+// `data` while keeping the top-level `hash` field unchanged cannot
+// escape detection.
+//
+// Branch 8 of the peer-review plan calls these tests out
+// specifically because chain.AccountBlock carries a pre-hashed
+// DataHash field — without a parser-boundary test, a regression
+// could plumb the peer's claimed DataHash through without ever
+// hashing the raw bytes locally.
+func TestConvertAndVerifyAccountBlock_TamperedDataPreimageRejects(t *testing.T) {
+	raw, err := os.ReadFile("testdata/mainnet_account_block.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var resp struct {
+		Result struct {
+			List []rpcAccountBlock `json:"list"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Result.List) != 1 {
+		t.Fatalf("expected 1 block in fixture, got %d", len(resp.Result.List))
+	}
+
+	// Sanity: the truthful mainnet block converts cleanly. Without
+	// this assertion the negative test could pass for the wrong
+	// reason (e.g., a fixture-loading bug).
+	truthful := resp.Result.List[0]
+	if _, err := convertAndVerifyAccountBlock(truthful); err != nil {
+		t.Fatalf("truthful mainnet fixture should convert: %v", err)
+	}
+
+	// Tamper: replace the base64 `data` payload with a different
+	// payload while leaving the top-level claimed `hash` untouched.
+	// Local DataHash recompute diverges, block hash recompute
+	// diverges, ErrHashMismatch.
+	tampered := truthful
+	tampered.Data = base64.StdEncoding.EncodeToString([]byte("attacker payload"))
+	_, err = convertAndVerifyAccountBlock(tampered)
+	if err == nil {
+		t.Fatal("tampered data preimage: expected hash mismatch, got nil")
+	}
+	if !errors.Is(err, ErrHashMismatch) {
+		t.Errorf("expected ErrHashMismatch, got %v", err)
 	}
 }
 

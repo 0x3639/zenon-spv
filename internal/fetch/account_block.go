@@ -83,6 +83,16 @@ func (c *Client) FetchAccountBlocksByHeight(ctx context.Context, addressBech32 s
 // convertAndVerifyAccountBlock parses an rpcAccountBlock into a
 // chain.AccountBlock, recomputing the claimed hash from the signed
 // envelope and returning ErrHashMismatch if the peer lied.
+//
+// Important: chain.AccountBlock.DataHash is derived LOCALLY from
+// the raw `data` preimage; the wire format does not carry a
+// separate DataHash field, and any peer-supplied pre-hash would be
+// ignored. A peer that mutates the raw `data` while leaving the
+// top-level claimed `hash` unchanged still fails this function
+// (locally-computed DataHash diverges → recomputed block hash
+// diverges → ErrHashMismatch). The same property holds for the
+// descendant-blocks hash, which is recomputed via
+// descendantBlocksHash from the decoded descendants slice.
 func convertAndVerifyAccountBlock(b rpcAccountBlock) (chain.AccountBlock, error) {
 	prev, err := decodeHex32(b.PreviousHash)
 	if err != nil {
