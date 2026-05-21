@@ -19,3 +19,6 @@ coverage.html
 # Go workspace junk
 go.work
 go.work.sum
+
+# Claude Code personal overrides (team settings go in .claude/settings.json if needed)
+.claude/settings.local.json
