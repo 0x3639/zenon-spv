@@ -7,7 +7,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"sort"
 
 	"golang.org/x/crypto/sha3"
 
@@ -136,7 +135,7 @@ func convertAndVerifyDetailed(m rpcMomentum) (DetailedHeader, error) {
 	if err != nil {
 		return DetailedHeader{}, fmt.Errorf("content: %w", err)
 	}
-	contentHash := contentHashOfDecoded(contentSlice)
+	contentHash := chain.MomentumContentHash(contentSlice)
 
 	pubkey, err := base64ToBytesOptional(m.PublicKey)
 	if err != nil {
@@ -191,37 +190,17 @@ func decodeAccountHeaders(rpcContent []rpcAccountHdr) ([]chain.AccountHeader, er
 	return out, nil
 }
 
-func contentHashOfDecoded(headers []chain.AccountHeader) chain.Hash {
-	if len(headers) == 0 {
-		return sha3sum(nil)
-	}
-	rows := make([][]byte, len(headers))
-	for i, h := range headers {
-		rows[i] = h.Bytes()
-	}
-	sort.Slice(rows, func(a, b int) bool {
-		return bytesLess(rows[a], rows[b])
-	})
-	d := sha3.New256()
-	for _, r := range rows {
-		d.Write(r)
-	}
-	var out chain.Hash
-	copy(out[:], d.Sum(nil))
-	return out
-}
-
-// contentHashOf mirrors MomentumContent.Hash —
-// reference/go-zenon/chain/nom/momentum_content.go:29-55. Each
-// AccountHeader serializes as address(20B) || uint64BE(height) ||
-// hash(32B), the slice is sorted by AccountBlockHeaderComparer
-// (lexicographic on AccountHeader.Bytes), then SHA3-256 of the
-// concatenation.
+// contentHashOf decodes the RPC-wire account-header slice into
+// chain.AccountHeader entries and computes the canonical
+// MomentumContent.Hash via chain.MomentumContentHash. Branch 7
+// consolidated the per-package implementations into the single
+// shared function; this entry point just covers the
+// decode-then-hash path that the fetch layer needs.
 func contentHashOf(content []rpcAccountHdr) (chain.Hash, error) {
 	if len(content) == 0 {
-		return sha3sum(nil), nil
+		return chain.MomentumContentHash(nil), nil
 	}
-	rows := make([][]byte, len(content))
+	headers := make([]chain.AccountHeader, len(content))
 	for i, h := range content {
 		addr, err := DecodeZenonAddress(h.Address)
 		if err != nil {
@@ -231,22 +210,13 @@ func contentHashOf(content []rpcAccountHdr) (chain.Hash, error) {
 		if err != nil {
 			return chain.Hash{}, fmt.Errorf("hash[%d]: %w", i, err)
 		}
-		buf := make([]byte, 0, 20+8+32)
-		buf = append(buf, addr[:]...)
-		buf = appendUint64BE(buf, h.Height)
-		buf = append(buf, hash[:]...)
-		rows[i] = buf
+		headers[i] = chain.AccountHeader{
+			Address: chain.Address(addr),
+			Height:  h.Height,
+			Hash:    hash,
+		}
 	}
-	sort.Slice(rows, func(a, b int) bool {
-		return bytesLess(rows[a], rows[b])
-	})
-	d := sha3.New256()
-	for _, r := range rows {
-		d.Write(r)
-	}
-	var out chain.Hash
-	copy(out[:], d.Sum(nil))
-	return out, nil
+	return chain.MomentumContentHash(headers), nil
 }
 
 func sha3sum(b []byte) chain.Hash {
@@ -283,11 +253,3 @@ func appendUint64BE(dst []byte, v uint64) []byte {
 	return append(dst, b[:]...)
 }
 
-func bytesLess(a, b []byte) bool {
-	for i := 0; i < len(a) && i < len(b); i++ {
-		if a[i] != b[i] {
-			return a[i] < b[i]
-		}
-	}
-	return len(a) < len(b)
-}

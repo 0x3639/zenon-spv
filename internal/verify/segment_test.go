@@ -68,7 +68,7 @@ func segmentFixture(t *testing.T) (HeaderState, proof.AccountSegment, []proof.Co
 		{Address: addr, Height: 1, Hash: block1.BlockHash},
 		{Address: addr, Height: 2, Hash: block2.BlockHash},
 	}
-	committedContentHash := flatContentHash(committed)
+	committedContentHash := chain.MomentumContentHash(committed)
 
 	// Build 9 momentum headers; the third (height 103) commits the
 	// synthetic Content. With WindowLow=6 and capacity=W+1=7, the

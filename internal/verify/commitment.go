@@ -1,11 +1,7 @@
 package verify
 
 import (
-	"bytes"
 	"fmt"
-	"sort"
-
-	"golang.org/x/crypto/sha3"
 
 	"github.com/0x3639/zenon-spv/internal/chain"
 	"github.com/0x3639/zenon-spv/internal/proof"
@@ -88,7 +84,7 @@ func VerifyCommitment(state HeaderState, evidence proof.CommitmentEvidence, poli
 			FailedAt: -1,
 		}
 	}
-	recomputed := flatContentHash(evidence.Flat.SortedHeaders)
+	recomputed := chain.MomentumContentHash(evidence.Flat.SortedHeaders)
 	if recomputed != header.ContentHash {
 		return Result{
 			Outcome:  OutcomeReject,
@@ -120,44 +116,6 @@ func VerifyCommitments(state HeaderState, batch []proof.CommitmentEvidence, poli
 	return out
 }
 
-// flatContentHash mirrors MomentumContent.Hash —
-// reference/go-zenon/chain/nom/momentum_content.go:29-55.
-//
-// Each AccountHeader serializes as address(20B) || uint64BE(height)
-// || hash(32B); the slice is sorted lexicographically by that byte
-// representation; the SHA3-256 of the byte concatenation is the
-// commitment root r_C.
-//
-// This function is byte-equivalent to internal/fetch.contentHashOf,
-// duplicated here to keep the verifier dependency-free of the fetch
-// package (verify must remain offline-pure).
-func flatContentHash(headers []chain.AccountHeader) chain.Hash {
-	if len(headers) == 0 {
-		return sha3sum(nil)
-	}
-	rows := make([][]byte, len(headers))
-	for i, h := range headers {
-		rows[i] = h.Bytes()
-	}
-	sort.Slice(rows, func(a, b int) bool {
-		return bytes.Compare(rows[a], rows[b]) < 0
-	})
-	d := sha3.New256()
-	for _, r := range rows {
-		d.Write(r)
-	}
-	var out chain.Hash
-	copy(out[:], d.Sum(nil))
-	return out
-}
-
-func sha3sum(b []byte) chain.Hash {
-	d := sha3.New256()
-	d.Write(b)
-	var out chain.Hash
-	copy(out[:], d.Sum(nil))
-	return out
-}
 
 func containsAccountHeader(slice []chain.AccountHeader, target chain.AccountHeader) bool {
 	for _, h := range slice {

@@ -28,7 +28,7 @@ func commitmentFixture(t *testing.T) (HeaderState, proof.CommitmentEvidence, []c
 		{Address: chain.Address{0xb2}, Height: 9, Hash: chain.Hash{0xb2}},
 		{Address: chain.Address{0xc3}, Height: 12, Hash: chain.Hash{0xc3}},
 	}
-	committedContentHash := flatContentHash(committed)
+	committedContentHash := chain.MomentumContentHash(committed)
 
 	// Build 9 contiguous headers; the commitment lands at headers[2]
 	// (height 103). With WindowLow=6 and capacity=W+1=7, the retained
@@ -179,26 +179,7 @@ func TestAttack_CommitmentWithoutPostWindowRefuses(t *testing.T) {
 	}
 }
 
-func TestFlatContentHash_EmptySliceMatchesEmptyHash(t *testing.T) {
-	got := flatContentHash(nil)
-	want := sha3sum(nil)
-	if got != want {
-		t.Fatalf("empty content hash: got %x, want %x", got, want)
-	}
-}
-
-func TestFlatContentHash_OrderInvariant(t *testing.T) {
-	// flatContentHash sorts internally, so callers can pass any order.
-	headers := []chain.AccountHeader{
-		{Address: chain.Address{0x03}, Height: 1, Hash: chain.Hash{0x03}},
-		{Address: chain.Address{0x01}, Height: 1, Hash: chain.Hash{0x01}},
-		{Address: chain.Address{0x02}, Height: 1, Hash: chain.Hash{0x02}},
-	}
-	a := flatContentHash(headers)
-	// Rotate
-	rotated := []chain.AccountHeader{headers[2], headers[0], headers[1]}
-	b := flatContentHash(rotated)
-	if a != b {
-		t.Errorf("hash not order-invariant: %x vs %x", a, b)
-	}
-}
+// The former TestFlatContentHash_EmptySliceMatchesEmptyHash and
+// TestFlatContentHash_OrderInvariant tests moved to
+// internal/chain/content_hash_test.go (Branch 7); the canonical
+// content-hash function now lives in that package.
