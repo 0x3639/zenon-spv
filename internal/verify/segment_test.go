@@ -379,13 +379,12 @@ func TestVerifySegment_EmbeddedBlockEmptyPkSigAccepts(t *testing.T) {
 // authorization downstream.
 func TestVerifySegment_EmbeddedBlockWithPublicKeyRejects(t *testing.T) {
 	state, segment, commitments := embeddedSegmentFixture(t)
-	// Inject a non-empty PublicKey. We don't re-sign or recompute the
-	// block hash because the EmbeddedMustNotSign check fires BEFORE
-	// the linkage/commitment checks — the pk presence alone rejects.
-	// Recompute the block hash so the InvalidHash check (which runs
-	// first) doesn't fire and mask the embedded-must-not-sign result.
+	// Inject a non-empty PublicKey. PublicKey is NOT included in
+	// chain.AccountBlock.ComputeHash (the signed envelope omits
+	// PublicKey and Signature), so the fixture's existing BlockHash
+	// remains valid and ReasonInvalidHash will not mask the
+	// embedded-must-not-sign result we're asserting.
 	segment.Blocks[0].PublicKey = []byte{0x01, 0x02, 0x03}
-	segment.Blocks[0].BlockHash = segment.Blocks[0].ComputeHash()
 
 	res := VerifySegment(state, segment, commitments, segmentFixturePolicy())
 	if len(res.Blocks) != 1 {

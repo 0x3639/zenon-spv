@@ -54,11 +54,21 @@ func (n *Nonce) UnmarshalText(text []byte) error {
 // ChangesHash exist on go-zenon's struct but are not signed and are
 // not needed by an SPV; we omit them.
 //
-// DescendantBlocksHash and DataHash are pre-computed in the wire
-// format (the SPV does not need raw DescendantBlocks or raw Data —
-// only their hashes, which the producer's signature already binds).
-// A peer that lies about either will surface as a recompute mismatch
-// against the committed AccountHeader hash.
+// DescendantBlocksHash and DataHash are pre-hashed fields on this
+// verifier/proof-side type — the SPV does not need raw
+// DescendantBlocks or raw Data here, only their hashes (which the
+// producer's signature already binds). A peer that lies about
+// either still surfaces as a recompute mismatch against the
+// committed AccountHeader hash downstream.
+//
+// IMPORTANT: the JSON-RPC wire format does NOT carry a separate
+// DataHash field — the fetch layer
+// (internal/fetch.convertAndVerifyAccountBlock) derives DataHash
+// LOCALLY by hashing the raw `data` base64 preimage and only then
+// constructs this type. Any peer-supplied DataHash would be
+// ignored at the wire boundary; treating this field as
+// "pre-computed" applies only AFTER the fetch decoder has
+// already validated it.
 type AccountBlock struct {
 	Version              uint64        `json:"version"`
 	ChainIdentifier      uint64        `json:"chainIdentifier"`
