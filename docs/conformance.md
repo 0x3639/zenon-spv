@@ -68,14 +68,16 @@ Account-segment layer (Phase 3):
 These are *known* and *documented*, not bugs. Each links to its
 fix-plan branch where applicable.
 
-1. **Producer-set / quorum signature check is not performed.** The
-   verifier checks a single Ed25519 signature against the producer's
-   claimed public key, but does not check that the public key belongs
-   to the active Pillar set at that height. Required for full G1
-   guarantee per `bounded-verification-boundaries.md` §4. Tracked as
-   **Branch 5** in [`peer-review-plan.md`](peer-review-plan.md);
-   visible to integrators via the CLI ACCEPT caveat and
-   [`trust-model.md`](trust-model.md).
+1. **Producer-set / quorum signature check is opt-in via
+   `--schedule`.** With no schedule, the verifier only checks the
+   Ed25519 signature against the claimed public key, so any leaked
+   keypair admits a forged chain extension (tier-1 caveat). With
+   `--schedule <path>`, each header must match the operator-attested
+   `(height, timestamp, producing-address)` triple — tier-2 caveat.
+   Local derivation of producer-set transitions from
+   embedded-contract state (tier 3) remains future work. See
+   [`trust-model.md`](trust-model.md) and
+   [`producer-set-verification.md`](producer-set-verification.md).
 
 2. **Mainnet genesis trust root is embedded but single-sourced
    originally.** The embedded hash recomputes from the signed envelope

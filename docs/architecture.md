@@ -71,6 +71,10 @@ The active fix plan is `docs/peer-review-plan.md`.
   bundle shipped today carries the same structure.
 - ADR 0002 (`zenon-spv-vault/decisions/0002-genesis-trust-anchor.md`):
   embedded mainnet trust root + multi-peer recompute tool.
-- ADR 0004 (`zenon-spv-vault/decisions/0004-producer-set-verification.md`):
-  producer-set check originally deferred; being reopened in Branch 5
-  of the fix plan with a written design gate (Branch 5a).
+- ADR 0004 (`zenon-spv-vault/decisions/0004-producer-set-quorum-check.md`):
+  producer-set check originally deferred; reopened in Branch 5 of
+  the fix plan with a written design gate (Branch 5a, see
+  [`producer-set-verification.md`](producer-set-verification.md))
+  and an opt-in implementation (Branch 5b, exposed via
+  `--schedule`). ADR 0005 will record the implementation-time
+  defaults.

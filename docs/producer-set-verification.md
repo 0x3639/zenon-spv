@@ -499,11 +499,12 @@ is no longer an open question (Codex P2 resolved in §4).
 - **Schedule signing:** if release-binary provenance becomes
   insufficient, sign the schedule JSON with an offline maintainer
   key and verify on load.
-- **Conformance update:** flip the §10 "producer-set check" entry
-  in `docs/conformance.md` once Branch 5b lands; the trust-model
-  doc's tier-2 caveat should match what the CLI prints.
+- **Conformance update:** the §10 "producer-set check" entry in
+  `docs/conformance.md` was flipped when Branch 5b landed; the
+  trust-model doc's tier-2 caveat matches the CLI output. Future
+  doc work follows any further trust-tier changes.
 - **Vault ADR 0005:** write a new ADR superseding 0004 once
-  Branch 5b ships, recording the actual chosen defaults
+  operating experience confirms the Branch 5b defaults
   (attestation threshold, sidecar load path, schedule wire
   format). The vault update is the maintainer's responsibility;
   from this repo the vault is treated as read-only.

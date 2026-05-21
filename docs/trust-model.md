@@ -44,15 +44,23 @@ For a verified bundle:
 
 ## What ACCEPT does NOT prove
 
-### Today (open in the active fix plan)
+### Today (depends on CLI configuration)
 
-1. **Producer-set / quorum authorization.** The verifier confirms
-   signatures match the claimed `PublicKey` but does not yet check
-   that the key belongs to the active Pillar set at that height. An
-   attacker controlling any keypair can forge a valid-looking header
-   chain extension from an attacker-rooted point. This is the gap
-   the CLI ACCEPT caveat names and Branch 5 of
-   [`peer-review-plan.md`](peer-review-plan.md) closes.
+1. **Producer-set / quorum authorization, when `--schedule` is not
+   configured.** The verifier always checks the Ed25519 signature
+   matches the claimed `PublicKey`. Whether the signing key is
+   actually the elected producer for the header's slot depends on
+   whether an `--schedule <path>` was passed:
+   - **Without `--schedule`** (default): the producer-set check is
+     skipped. The CLI prints the tier-1 caveat. An attacker
+     controlling any keypair can forge a valid-looking header
+     chain from an attacker-rooted point — this is the gap that
+     opt-in producer authorization closes.
+   - **With `--schedule`**: each header's
+     `(height, TimestampUnix, PubKeyToAddress(PublicKey))` triple
+     must match the operator-attested schedule. The CLI prints
+     the tier-2 caveat. Implementation details: see
+     [`producer-set-verification.md`](producer-set-verification.md).
 
 _(Bundle resource bounds — previously listed here — are now
 enforced via `Policy.Max*` defaults and `proof.LoadHeaderBundleBounded`.
@@ -86,7 +94,7 @@ rationale.)_
 The CLI surfaces one of three caveats with every ACCEPT, naming
 which trust assumptions are open:
 
-### Tier 1 — No producer authorizer (current release)
+### Tier 1 — No producer authorizer configured
 
 ```
 CAVEAT: producer-set authorization is not enforced. ACCEPT means
@@ -94,12 +102,15 @@ local consistency under the configured trust root and checkpoints,
 not full Zenon chain validity.
 ```
 
-This is the caveat the current build prints. It will remain visible
-until Branch 5b lands a real `ProducerAuthorizer`.
+This is the caveat printed when the CLI is invoked without
+`--schedule <path>` (the default behavior for `verify-*` and
+`watch`). It is also printed when `--schedule` is omitted from
+any test build that drives `VerifyHeaders` directly.
 
-### Tier 2 — Operator-attested producer schedule (Branch 5b, planned)
+### Tier 2 — Operator-attested producer schedule
 
-When Branch 5b ships, ACCEPT under an attested schedule will print:
+When `--schedule <path>` is configured, ACCEPT under an attested
+schedule prints:
 
 ```
 CAVEAT: producer-set authorization is checked against an operator-
@@ -149,10 +160,17 @@ trust attestation, not as evidence of canonical history.
 ## Terminology
 
 This repo describes itself as an "SPV", matching the spec. In
-practice, until producer-set verification lands, the implementation
-is closer to a **bounded attestation verifier**: it proves local
-consistency against attested anchors, not full chain validity. The
-distinction matters for use cases that need to reject equivocating
-producers or coordinated peer lies. After Branch 5b, the gap to a
-full SPV is narrower; closing the structural NG caveats above is
-beyond what any SPV-class verifier can promise.
+practice, the implementation behaves differently by configuration:
+
+- **Without `--schedule`**: closer to a **bounded attestation
+  verifier** — proves local consistency against attested anchors,
+  not full chain validity. Any leaked Ed25519 keypair admits forged
+  headers.
+- **With `--schedule`**: closer to a full SPV under tier-2 trust
+  assumptions — the elected producer for each slot must sign,
+  per the attested schedule. The schedule's provenance and the
+  structural NG caveats above remain.
+
+Closing the structural NG caveats (finality, canonical chain,
+censorship, cross-verifier agreement, state-transition correctness)
+is beyond what any SPV-class verifier can promise.
