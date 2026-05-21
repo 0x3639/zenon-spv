@@ -341,6 +341,16 @@ func prepareVerifierContext(name string, args []string) (verifierContext, int) {
 		}
 	}
 
+	// Re-authorize the resumed retained window under the configured
+	// authorizer. Closes the downgrade hole where a state file built
+	// without --schedule is resumed with --schedule — without this
+	// check the tier-2 caveat would print while commitment/segment
+	// verification is still rooted in unauthorized momenta.
+	if r := verify.AuthorizeRetainedWindow(state, opts); r.Outcome != verify.OutcomeAccept {
+		fmt.Printf("state: %s\n", r)
+		return verifierContext{}, outcomeExitCode(r.Outcome)
+	}
+
 	return verifierContext{
 		bundle:    bundle,
 		state:     state,

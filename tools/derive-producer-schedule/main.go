@@ -131,8 +131,26 @@ func deriveSchedule(
 	fmt.Fprintf(progress, "deriving schedule: heights %d..%d (%d momentums) across %d peers (quorum=%d)\n",
 		from, through, total, len(urls), multi.Quorum)
 
-	entries := make([]verify.ProducerEntry, 0, total)
+	// Record the actual per-peer frontier at derivation time as
+	// provenance metadata. Each peer's frontier must be at or above
+	// `through` — a peer that hasn't seen the requested range cannot
+	// attest to it. Without this check we would silently emit a
+	// schedule whose SourceHeights metadata was a fiction.
 	startTime := time.Now()
+	sourceHeights := make(map[string]uint64, len(multi.Peers))
+	for _, p := range multi.Peers {
+		f, err := p.FetchFrontier(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("peer %s: frontier fetch: %w", p.URL, err)
+		}
+		if f.Height < through {
+			return nil, fmt.Errorf("peer %s: frontier=%d below requested --through=%d (peer has not seen the range)",
+				p.URL, f.Height, through)
+		}
+		sourceHeights[p.URL] = f.Height
+	}
+
+	entries := make([]verify.ProducerEntry, 0, total)
 
 	for batchStart := from; batchStart <= through; batchStart += batchSize {
 		count := batchSize
@@ -168,10 +186,6 @@ func deriveSchedule(
 		}
 	}
 
-	sourceHeights := make(map[string]uint64, len(urls))
-	for _, u := range urls {
-		sourceHeights[u] = through
-	}
 	coverage := []verify.ProducerCoverage{{FromHeight: from, ThroughHeight: through}}
 	schedule, err := verify.NewProducerSchedule(chainID, coverage, entries, urls, sourceHeights)
 	if err != nil {

@@ -103,7 +103,21 @@ func startPeer(t *testing.T, headers []chain.Header, preimages [][]byte, overrid
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			t.Fatalf("decode: %v", err)
 		}
-		if req.Method != "ledger.getMomentumsByHeight" {
+		switch req.Method {
+		case "ledger.getFrontierMomentum":
+			// Each mock peer's frontier is the highest known height
+			// in the fixture. derive-producer-schedule queries this
+			// at startup as provenance metadata.
+			frontier := headers[len(headers)-1]
+			frontierPreimage := preimages[len(preimages)-1]
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"jsonrpc": "2.0", "id": 1,
+				"result": momentumJSON(frontier, frontierPreimage),
+			})
+			return
+		case "ledger.getMomentumsByHeight":
+			// handled below
+		default:
 			t.Fatalf("unexpected method %q", req.Method)
 		}
 		var p []json.RawMessage
@@ -216,6 +230,37 @@ func TestDeriveSchedule_PeerDisagreementAborts(t *testing.T) {
 	_, err := deriveSchedule(ctx, multi, urls, 99, from, through, 4, io.Discard)
 	if err == nil {
 		t.Fatal("expected error on peer disagreement, got nil")
+	}
+}
+
+// TestDeriveSchedule_FrontierBelowThroughAborts checks the
+// provenance guard: a peer that has not yet seen the requested
+// --through height cannot honestly attest to it. The frontier
+// RPC is queried at startup; any peer below through aborts the
+// run before any range fetching happens.
+func TestDeriveSchedule_FrontierBelowThroughAborts(t *testing.T) {
+	headers, preimages := makeChain(t, 6)
+	// Trim the fixture's tail so the peer's reported frontier is at
+	// height = headers[3].Height (1004). We request through=1006.
+	short := headers[:4]
+	shortPre := preimages[:4]
+
+	srvA := startPeer(t, short, shortPre, nil)
+	defer srvA.Close()
+	srvB := startPeer(t, short, shortPre, nil)
+	defer srvB.Close()
+	srvC := startPeer(t, short, shortPre, nil)
+	defer srvC.Close()
+
+	urls := []string{srvA.URL, srvB.URL, srvC.URL}
+	multi := fetch.NewMultiClient(urls)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	_, err := deriveSchedule(ctx, multi, urls, 99, 1001, 1006, 4, io.Discard)
+	if err == nil {
+		t.Fatal("expected error when peer frontier is below --through, got nil")
 	}
 }
 

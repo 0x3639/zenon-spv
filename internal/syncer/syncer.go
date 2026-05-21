@@ -124,6 +124,23 @@ func (l *Loop) Run(ctx context.Context) error {
 		return errors.New("syncer: refusing to bootstrap from empty state — pre-anchor with `verify-headers --genesis-config <checkpoint> --state <path>` first")
 	}
 
+	// Re-authorize the loaded retained window under the configured
+	// authorizer. Closes the downgrade hole where a state file built
+	// without --schedule (or under a different schedule) is resumed
+	// here — without this the tier-2 startup caveat would print
+	// while commitment/segment verification stays rooted in
+	// unauthorized momenta.
+	authOpts := verify.VerifyOptions{Policy: l.Policy}
+	if l.Authorizer != nil {
+		authOpts.ProducerAuth = verify.ProducerAuthOptions{
+			Mode:       verify.ProducerAuthRequired,
+			Authorizer: l.Authorizer,
+		}
+	}
+	if r := verify.AuthorizeRetainedWindow(state, authOpts); r.Outcome != verify.OutcomeAccept {
+		return fmt.Errorf("syncer: persisted state did not re-authorize under configured schedule: %s", r)
+	}
+
 	l.logf("watching: tip=%d, peers=%d, quorum=%d, interval=%s\n",
 		state.RetainedWindow[len(state.RetainedWindow)-1].Height,
 		len(l.Multi.Peers), l.Multi.Quorum, l.Interval)

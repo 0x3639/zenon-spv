@@ -386,6 +386,114 @@ func TestVerifyHeadersWithOptions_RequiredNilAuthorizerRefuses(t *testing.T) {
 // AcceptanceCaveatWithOptions
 // --------------------------------------------------------------------
 
+// --------------------------------------------------------------------
+// AuthorizeRetainedWindow — closes the resumed-state downgrade hole
+// (Codex review of Branch 5b: state built without --schedule could
+// previously be resumed with --schedule and the tier-2 caveat
+// printed while commitment/segment proofs were rooted in
+// unauthorized momenta).
+// --------------------------------------------------------------------
+
+func TestAuthorizeRetainedWindow_DisabledIsAlwaysAccept(t *testing.T) {
+	genesis, headers, _ := buildChain(t, 4)
+	state := NewHeaderState(genesis, Policy{W: WindowLow})
+	for _, h := range headers {
+		state.Append(h)
+	}
+	r := AuthorizeRetainedWindow(state, VerifyOptions{Policy: Policy{W: WindowLow}})
+	if r.Outcome != OutcomeAccept {
+		t.Errorf("Disabled mode must always accept; got %s", r)
+	}
+}
+
+func TestAuthorizeRetainedWindow_RequiredAuthorizesCleanWindow(t *testing.T) {
+	genesis, headers, _ := buildChain(t, 4)
+	state := NewHeaderState(genesis, Policy{W: WindowLow})
+	for _, h := range headers {
+		state.Append(h)
+	}
+	auth := NewScheduleAuthorizer(fixtureSchedule(t, 4))
+	r := AuthorizeRetainedWindow(state, VerifyOptions{
+		ProducerAuth: ProducerAuthOptions{Mode: ProducerAuthRequired, Authorizer: auth},
+	})
+	if r.Outcome != OutcomeAccept {
+		t.Errorf("clean window under matching schedule must accept; got %s", r)
+	}
+}
+
+func TestAuthorizeRetainedWindow_RequiredRejectsUnauthorizedRetainedHeader(t *testing.T) {
+	// Build a state whose retained window contains a header signed
+	// by an attacker, then verify the producer-auth helper REJECTS.
+	// This is the downgrade scenario: state file persisted without
+	// --schedule, later resumed with --schedule.
+	attackerSeed := make([]byte, ed25519.SeedSize)
+	attackerSeed[0] = 0xab
+	attackerPriv := ed25519.NewKeyFromSeed(attackerSeed)
+	attackerPub := attackerPriv.Public().(ed25519.PublicKey)
+
+	const chainID = uint64(3)
+	genesisHeight := uint64(100)
+	genesisHash := chain.Hash{0x47, 0x45, 0x4e, 0x45, 0x53, 0x49, 0x53}
+	genesis := GenesisTrustRoot{ChainID: chainID, Height: genesisHeight, HeaderHash: genesisHash}
+
+	h := chain.Header{
+		Version:         1,
+		ChainIdentifier: chainID,
+		PreviousHash:    genesisHash,
+		Height:          101,
+		TimestampUnix:   1700000010,
+		DataHash:        chain.Hash{0x01},
+		ContentHash:     chain.Hash{0xc0},
+		ChangesHash:     chain.Hash{0xcc},
+		PublicKey:       append([]byte{}, attackerPub...),
+	}
+	h.HeaderHash = h.ComputeHash()
+	h.Signature = ed25519.Sign(attackerPriv, h.HeaderHash[:])
+
+	state := NewHeaderState(genesis, Policy{W: WindowLow})
+	state.Append(h)
+
+	auth := NewScheduleAuthorizer(fixtureSchedule(t, 4))
+	r := AuthorizeRetainedWindow(state, VerifyOptions{
+		ProducerAuth: ProducerAuthOptions{Mode: ProducerAuthRequired, Authorizer: auth},
+	})
+	if r.Outcome != OutcomeReject || r.Reason != ReasonUnauthorizedProducer {
+		t.Errorf("expected REJECT/UnauthorizedProducer for resumed unauthorized window; got %s", r)
+	}
+}
+
+func TestAuthorizeRetainedWindow_RequiredRefusesUncoveredHeight(t *testing.T) {
+	// Retained window covers heights 101..104; schedule covers only
+	// 101..102. The first uncovered entry should REFUSE rather than
+	// extrapolate.
+	genesis, headers, _ := buildChain(t, 4)
+	state := NewHeaderState(genesis, Policy{W: WindowLow})
+	for _, h := range headers {
+		state.Append(h)
+	}
+	auth := NewScheduleAuthorizer(fixtureSchedule(t, 2))
+	r := AuthorizeRetainedWindow(state, VerifyOptions{
+		ProducerAuth: ProducerAuthOptions{Mode: ProducerAuthRequired, Authorizer: auth},
+	})
+	if r.Outcome != OutcomeRefused || r.Reason != ReasonProducerSetUnknown {
+		t.Errorf("expected REFUSED/ProducerSetUnknown for uncovered retained height; got %s", r)
+	}
+}
+
+func TestAuthorizeRetainedWindow_RequiredNilAuthorizerRefuses(t *testing.T) {
+	genesis, headers, _ := buildChain(t, 4)
+	state := NewHeaderState(genesis, Policy{W: WindowLow})
+	for _, h := range headers {
+		state.Append(h)
+	}
+	r := AuthorizeRetainedWindow(state, VerifyOptions{
+		ProducerAuth: ProducerAuthOptions{Mode: ProducerAuthRequired, Authorizer: nil},
+	})
+	if r.Outcome != OutcomeRefused || r.Reason != ReasonProducerSetUnknown {
+		t.Errorf("expected REFUSED/ProducerSetUnknown for nil authorizer under Required; got %s", r)
+	}
+}
+
 func TestAcceptanceCaveatWithOptions_TierSelection(t *testing.T) {
 	policy := Policy{W: WindowLow}
 

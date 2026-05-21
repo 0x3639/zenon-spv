@@ -354,3 +354,48 @@ func (a *ScheduleAuthorizer) Authorize(height uint64, timestampUnix uint64, pubk
 // Source returns OperatorAttested for schedule-backed authorizers.
 // A future ChainDerivedAuthorizer would return LocallyDerivedFromChain.
 func (a *ScheduleAuthorizer) Source() ProducerSource { return ProducerSourceOperatorAttested }
+
+// AuthorizeRetainedWindow re-runs producer authorization across
+// every header in a persisted HeaderState. Closes the downgrade
+// hole where a state file built without --schedule (or with a
+// different schedule) is resumed under a new authorizer — the
+// retained-window momenta backing commitment/segment verification
+// never ran through producer auth, but the CLI would print the
+// tier-2 caveat as if they had.
+//
+// Returns ACCEPT when:
+//   - producer auth is Disabled, or
+//   - every retained header authorizes cleanly under the configured
+//     schedule.
+//
+// Returns REJECT/ReasonUnauthorizedProducer when any retained
+// header fails authorization (FailedAt = window index), REFUSED/
+// ReasonProducerSetUnknown when any retained header is outside the
+// schedule's coverage or no authorizer is configured under Required
+// mode.
+//
+// Cost: O(len(RetainedWindow)) authorizer calls. The retained
+// window is capped at policy.W+1 (≤ a few hundred entries even at
+// the highest tier), so this is negligible compared to fetch/verify.
+func AuthorizeRetainedWindow(state HeaderState, opts VerifyOptions) Result {
+	if opts.ProducerAuth.Mode != ProducerAuthRequired {
+		return accept()
+	}
+	if opts.ProducerAuth.Authorizer == nil {
+		return refuse(ReasonProducerSetUnknown,
+			"producer authorization required but no authorizer configured")
+	}
+	for i, h := range state.RetainedWindow {
+		switch opts.ProducerAuth.Authorizer.Authorize(h.Height, h.TimestampUnix, h.PublicKey) {
+		case ProducerAuthorized:
+			// fall through
+		case ProducerUnauthorized:
+			return reject(ReasonUnauthorizedProducer, i,
+				fmt.Sprintf("retained-window header at height=%d not authorized by configured schedule", h.Height))
+		case ProducerSetUnknown:
+			return refuse(ReasonProducerSetUnknown,
+				fmt.Sprintf("retained-window header at height=%d not covered by configured schedule", h.Height))
+		}
+	}
+	return accept()
+}
