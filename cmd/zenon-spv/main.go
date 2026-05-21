@@ -58,6 +58,7 @@ import (
 	"encoding/hex"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"strings"
@@ -163,6 +164,7 @@ func runVerifyCommitment(args []string) int {
 		}
 	}
 	if worst == verify.OutcomeAccept {
+		printAcceptCaveat(os.Stdout, ctx.policy)
 		if err := persistIfRequested(ctx.statePath, newState); err != nil {
 			fmt.Fprintf(os.Stderr, "state: %v\n", err)
 			return 70
@@ -179,6 +181,7 @@ func runVerifyHeaders(args []string) int {
 	result, newState := verify.VerifyHeaders(ctx.bundle.Headers, ctx.state, ctx.policy)
 	fmt.Println(result)
 	if result.Outcome == verify.OutcomeAccept {
+		printAcceptCaveat(os.Stdout, ctx.policy)
 		if err := persistIfRequested(ctx.statePath, newState); err != nil {
 			fmt.Fprintf(os.Stderr, "state: %v\n", err)
 			return 70
@@ -220,6 +223,7 @@ func runVerifySegment(args []string) int {
 		}
 	}
 	if worst == verify.OutcomeAccept {
+		printAcceptCaveat(os.Stdout, ctx.policy)
 		if err := persistIfRequested(ctx.statePath, newState); err != nil {
 			fmt.Fprintf(os.Stderr, "state: %v\n", err)
 			return 70
@@ -373,6 +377,11 @@ func runWatch(args []string) int {
 		Out:          os.Stderr,
 	}
 
+	// Surface the ACCEPT caveat once at startup. Per-tick ACCEPT logs
+	// in the syncer are stable for machine consumers; the human banner
+	// here carries the trust-assumption note.
+	printAcceptCaveat(os.Stderr, policy)
+
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 	if err := loop.Run(ctx); err != nil {
@@ -395,6 +404,16 @@ func splitWatchPeers(s string) []string {
 		}
 	}
 	return out
+}
+
+// printAcceptCaveat writes the producer-auth caveat for an ACCEPT
+// verdict to w. Kept out of canonical Result.String() so machine
+// consumers see stable output; surfaced at the human CLI level so an
+// integrator cannot mistake ACCEPT for a stronger guarantee than
+// this build provides. See internal/verify/caveats.go for tier
+// definitions.
+func printAcceptCaveat(w io.Writer, policy verify.Policy) {
+	fmt.Fprintln(w, verify.AcceptanceCaveat(policy))
 }
 
 // outcomeExitCode maps an Outcome to the documented exit-code matrix:
