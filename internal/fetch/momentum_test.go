@@ -2,6 +2,7 @@ package fetch
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -139,5 +140,83 @@ func TestContentHashOf_Empty(t *testing.T) {
 	want := sha3sum(nil)
 	if h != want {
 		t.Errorf("empty content hash mismatch: %x vs %x", h, want)
+	}
+}
+
+// TestContentHashOf_ParityWithChainMomentumContentHash is the
+// Branch-7 fetch-vs-chain parity test. The refactor consolidated
+// the two implementations into chain.MomentumContentHash; this
+// test exercises the non-trivial multi-row case to lock in that
+// the fetch decode path (DecodeZenonAddress + hex hash decode)
+// lands at the SAME canonical hash as direct construction.
+//
+// Real Zenon embedded-contract addresses are used as the bech32
+// fixture so the address decode is non-trivial (vs a hand-crafted
+// all-zeros payload). Heights and hashes are arbitrary but
+// distinct to exercise the sort + multi-row hashing path.
+func TestContentHashOf_ParityWithChainMomentumContentHash(t *testing.T) {
+	type row struct {
+		bech32 string
+		height uint64
+		hashHx string
+	}
+	rows := []row{
+		{"z1qxemdeddedxpyllarxxxxxxxxxxxxxxxsy3fmg", 1001,
+			"0101010101010101010101010101010101010101010101010101010101010101"},
+		{"z1qxemdeddedxplasmaxxxxxxxxxxxxxxxxsctrp", 1003,
+			"0202020202020202020202020202020202020202020202020202020202020202"},
+		{"z1qxemdeddedxstakexxxxxxxxxxxxxxxxjv8v62", 1002,
+			"abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234"},
+	}
+
+	// Build the RPC-wire form: string bech32 address + hex hash.
+	rpc := make([]rpcAccountHdr, len(rows))
+	for i, r := range rows {
+		rpc[i] = rpcAccountHdr{Address: r.bech32, Height: r.height, Hash: r.hashHx}
+	}
+	rpcHash, err := contentHashOf(rpc)
+	if err != nil {
+		t.Fatalf("contentHashOf: %v", err)
+	}
+
+	// Build the same content as chain.AccountHeader directly.
+	direct := make([]chain.AccountHeader, len(rows))
+	for i, r := range rows {
+		addrBytes, err := DecodeZenonAddress(r.bech32)
+		if err != nil {
+			t.Fatalf("decode %q: %v", r.bech32, err)
+		}
+		hashBytes, err := hex.DecodeString(r.hashHx)
+		if err != nil {
+			t.Fatalf("hex %q: %v", r.hashHx, err)
+		}
+		var h chain.Hash
+		copy(h[:], hashBytes)
+		direct[i] = chain.AccountHeader{
+			Address: chain.Address(addrBytes),
+			Height:  r.height,
+			Hash:    h,
+		}
+	}
+	directHash := chain.MomentumContentHash(direct)
+
+	if rpcHash != directHash {
+		t.Errorf("fetch ↔ chain parity broken on multi-row content:\n  rpcHash    = %x\n  directHash = %x",
+			rpcHash, directHash)
+	}
+
+	// Also lock in that order doesn't matter: shuffle the rpc input
+	// and the chain input differently, both must still match.
+	rpcShuffled := []rpcAccountHdr{rpc[2], rpc[0], rpc[1]}
+	directReversed := []chain.AccountHeader{direct[2], direct[1], direct[0]}
+	rpcShuffledHash, err := contentHashOf(rpcShuffled)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rpcShuffledHash != chain.MomentumContentHash(directReversed) {
+		t.Error("parity broken under reordered inputs")
+	}
+	if rpcShuffledHash != rpcHash {
+		t.Error("contentHashOf not order-invariant (expected after Branch 7 consolidation)")
 	}
 }

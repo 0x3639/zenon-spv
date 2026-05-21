@@ -252,4 +252,3 @@ func appendUint64BE(dst []byte, v uint64) []byte {
 	binary.BigEndian.PutUint64(b[:], v)
 	return append(dst, b[:]...)
 }
-
