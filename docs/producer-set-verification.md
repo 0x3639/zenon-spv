@@ -1,143 +1,171 @@
-# Producer-Set Verification — Design (Branch 5a gate)
+# Producer Verification — Design (Branch 5a gate, revised v2)
 
 > **Status:** Design accepted; implementation in Branch 5b.
 > **Supersedes:** the "defer indefinitely" outcome in vault ADR 0004.
-> **Companion:** [`trust-model.md`](trust-model.md), [`peer-review-plan.md`](peer-review-plan.md) §5.
+> **Companion:** [`trust-model.md`](trust-model.md) (forward reference — lands with Branch 4 of the active fix plan), [`peer-review-plan.md`](peer-review-plan.md) §5.
 >
 > **Vault sync (separate maintainer action):** vault ADR 0004
 > (`zenon-spv-vault/decisions/0004-producer-set-quorum-check.md`)
-> should be updated to status "Reopened" with a back-pointer to
-> this document. The vault is treated as read-only from the
-> implementation repo; the SPV maintainer should land that change
-> in the vault directly. The summary the vault ADR should add:
-> "Branch 5 of `zenon-spv/docs/peer-review-plan.md` implements
-> approach (3) — operator-attested schedule with multi-peer
-> snapshot — via `zenon-spv/docs/producer-set-verification.md`.
-> Approach (2) — locally derive from chain data — is deferred as
-> a follow-up phase."
+> should be updated with a "Reopened" status and a back-pointer to
+> this document. From this repo the vault is treated as read-only
+> per project convention (auto-mode classifier enforces the
+> boundary); the SPV maintainer should land that diff in the vault
+> directly. Suggested vault summary: "Branch 5 of
+> `zenon-spv/docs/peer-review-plan.md` implements per-momentum
+> producer verification via
+> `zenon-spv/docs/producer-set-verification.md`. Active-set
+> membership was considered insufficient (see Codex review of v1)
+> and replaced by per-momentum expected-producer lookup."
+>
+> **Revision history**:
+> - v1 (b556f2c, 2026-05-20) — active-set membership per interval.
+> - **v2 (this revision, 2026-05-20)** — per-momentum expected-producer
+>   schedule, in response to Codex review. Closes Codex P1a
+>   (active-set admits an attack where one Pillar key signs slots it
+>   was not elected to produce) and P1b (single-snapshot interval
+>   extrapolation is unsafe).
 
 This document is the design gate for Branch 5b. It records the
-chosen producer-set source, the schedule shape, the verifier
-semantics, and the residual trust assumptions before any code is
-written.
+chosen producer-verification source, the schedule shape, the
+verifier semantics, and the residual trust assumptions before any
+code is written.
 
 The vault ADR 0004 (`zenon-spv-vault/decisions/0004-producer-set-quorum-check.md`)
 originally evaluated five options and deferred all of them. This
-design reopens the question, chooses **option (3) — trusted-snapshot
-schedule — with multi-peer attestation**, and explicitly defers
-option (2) "shadow Pillar registry transitions from chain data" to
-a future phase.
+design reopens the question and chooses **per-momentum
+expected-producer attestation**, the strongest tractable
+verification the SPV can perform without re-implementing go-zenon's
+election algorithm. Local derivation of the producer sequence from
+chain-observed Pillar register/revoke events is deferred to a
+future phase.
 
 ---
 
-## 1. What we authorize
+## 1. What go-zenon enforces
 
-A Momentum carries a `PublicKey` (Ed25519, 32 bytes) and a
-`Signature` over the recomputed header hash. The verifier already
-checks the signature. What it does **not** check is that the signer
-is an authorized producer at the header's height.
-
-In go-zenon, Pillar registration lives in the embedded Pillar
-contract (`reference/go-zenon/vm/embedded/definition/pillars.go`):
+The SPV must match go-zenon's own consensus check, not approximate
+it. From `reference/go-zenon/consensus/consensus.go:73-95`:
 
 ```go
-type PillarInfo struct {
-    Name                         string
-    BlockProducingAddress        types.Address   // ← the field that matters
-    RewardWithdrawAddress        types.Address
-    StakeAddress                 types.Address
-    Amount                       *big.Int
-    RegistrationTime             int64
-    RevokeTime                   int64           // 0 means active
-    GiveBlockRewardPercentage    uint8
-    GiveDelegateRewardPercentage uint8
-    PillarType                   uint8
+func (cs *consensus) GetMomentumProducer(timestamp time.Time) (*types.Address, error) {
+    election, err := cs.electionManager.ElectionByTime(timestamp)
+    ...
+    for _, plan := range election.Producers {
+        if plan.StartTime == timestamp {
+            return &plan.Producer, nil
+        }
+    }
+    return nil, errors.Errorf("couldn't find producer for timestamp")
 }
 
-func (p *PillarInfo) IsActive() bool { return p.RevokeTime == 0 }
+func (cs *consensus) VerifyMomentumProducer(momentum *nom.Momentum) (bool, error) {
+    expected, err := cs.GetMomentumProducer(*momentum.Timestamp)
+    if err != nil {
+        return false, err
+    }
+    if momentum.Producer() == *expected {
+        return true, nil
+    }
+    return false, nil
+}
 ```
 
-A Momentum header is **authorized** at height H iff there exists an
-active Pillar at H whose `BlockProducingAddress` equals
-`chain.PubKeyToAddress(header.PublicKey)`. The verifier already
-implements `PubKeyToAddress` for F1 segment-block binding; the
-authorizer reuses it.
+And from `reference/go-zenon/chain/nom/momentum.go:84-90`:
 
-The key bytes used in authorization are therefore the **20-byte
-address derived from the 32-byte Ed25519 public key**, not the
-public key itself. This matches go-zenon's own authority model and
-sidesteps any concern about Pillars rotating signing keys while
-keeping the same producing address.
+```go
+func (m *Momentum) Producer() types.Address {
+    if m.producer == nil {
+        producer := types.PubKeyToAddress(m.PublicKey)
+        m.producer = &producer
+    }
+    return *m.producer
+}
+```
+
+Two consequences for the SPV:
+
+1. **Authorization is per slot, not per set.** Election is bucketed
+   into `tick`s; each tick has a `Producers []ProducerEvent` list
+   where each entry pins `StartTime` to exactly one producer
+   address. The expected producer at `timestamp` is the unique
+   producer whose `StartTime == timestamp`. Active-set membership
+   is insufficient: a Pillar active at height H but not elected
+   for that specific slot is NOT authorized for that slot.
+
+2. **The producer address derives from the momentum's `PublicKey`
+   via `types.PubKeyToAddress`.** The SPV already implements this
+   path as `chain.PubKeyToAddress` for the F1 segment-block
+   binding; the producer authorizer reuses it.
+
+The election algorithm itself uses a `proofBlock` (the momentum
+before `genProofTime(tick)`) to seed the per-tick producer order,
+running against Pillar delegations stored at that block. The SPV
+cannot replay this without shadowing a non-trivial slice of Zenon
+consensus state.
 
 ---
 
-## 2. Source of the active set
+## 2. Source of per-momentum producers
 
-**Choice: operator-attested snapshot from N peers, embedded at
-release time.**
+**Choice: an operator-attested `(height → expected_producer)`
+schedule covering explicit height ranges, produced by walking each
+momentum in the range on N independent fully-synced nodes.**
 
-### Why not derive from chain data now
+### Why this and not local derivation
 
-Option (2) in ADR 0004 — observing Pillar register/revoke events as
-the verifier walks the chain — is the more secure long-term answer.
-It would let the verifier reconstruct the active set at any height
-from data it has already validated, closing the loop. It is also
-out of scope for this branch because it requires:
+Local derivation of the producer sequence is the long-term answer.
+It requires:
 
-- Decoding embedded-contract account block payloads.
-- Tracking which embedded calls successfully completed (the SPV
-  does not execute EVM state transitions).
-- Handling spork-mediated rule changes that may modify Pillar
-  semantics at deployed heights.
+- Decoding Pillar register/revoke events from embedded-contract
+  account blocks.
+- Reconstructing Pillar delegation state at every election's
+  `proofBlock`.
+- Running go-zenon's election algorithm against that state.
+- Tracking spork-mediated rule changes.
 
-That is a multi-week project on its own. Branch 5b closes the
-immediate gap; option (2) becomes a clean follow-up once the
-verifier surfaces embedded-contract events.
+That is multi-week scope and a parallel project to this branch.
+Branch 5b ships the per-momentum table now to close the
+immediate gap; local derivation becomes a follow-up that can drop
+the table once shipped.
 
-### How the snapshot is taken
+### How the table is derived
 
-A separate tool (proposed name: `tools/derive-producer-schedule`,
-implemented in Branch 5b) queries the active Pillar set from N
-independent peers via the existing JSON-RPC method:
+A tool (proposed `tools/derive-producer-schedule`, implemented in
+Branch 5b) iterates a declared height range against N independent
+peers via the existing JSON-RPC. For each height H in the range:
 
-```
-embedded.pillar.getAll(pageIndex, pageSize) -> []PillarInfo
-```
+1. Fetch the momentum at H from every peer (already supported via
+   `internal/fetch.MultiClient`).
+2. Record `(H → chain.PubKeyToAddress(momentum.PublicKey))`.
+3. The N peer responses must agree on the producer address byte
+   for byte. Any disagreement aborts derivation — the tool refuses
+   to emit a schedule, the operator must investigate, and no
+   caveat downgrade follows.
 
-For each peer the tool:
+The tool produces a JSON file containing the per-height table plus
+metadata (§3). Each schedule explicitly declares which height range
+its derivation covered; there is **no** automatic extrapolation
+before the first observed height or after the last. Coverage of
+non-contiguous ranges is supported (two separate `ProducerCoverage`
+entries) but each range must independently come from observations.
 
-1. Iterates pages until exhausted.
-2. Filters `IsActive() == true`.
-3. Extracts `BlockProducingAddress`.
-4. Sorts the address list lexicographically.
-5. Computes the SHA3-256 hash of the sorted concatenation.
+Attestation threshold defaults to **N = 3** distinct operator peers,
+configurable via the tool's `--peers` flag.
 
-The N peer responses must produce identical schedule hashes. Any
-disagreement aborts derivation — the tool refuses to emit a
-schedule, the operator must investigate, and no caveat downgrade
-follows. Attestation threshold defaults to **N = 3** distinct
-operators, configurable via the tool's `--peers` flag.
+### Size and shipping
 
-### Schedule validity intervals
+A checkpoint-interval range (~1M momentums) produces ~24MB of
+table data (1M × 24 bytes for `(uint64, Address)` packed). Too
+large to embed in the binary. Branch 5b ships the schedule as a
+JSON sidecar loaded via `--schedule <path>` at the CLI. The
+embedded-default route remains available for short ranges if a
+future use case warrants it; the default ship-mode for mainnet is
+sidecar.
 
-A single snapshot taken at peer-observed height H is valid for a
-bounded interval around H. The tool records:
-
-- `ValidFrom uint64` — the lowest header height the operator
-  attests this set covered.
-- `ValidThrough uint64` — the highest header height the operator
-  attests this set covered.
-
-Concretely the tool may set `ValidFrom = H - rotationBuffer` and
-`ValidThrough = H + rotationBuffer` where `rotationBuffer` defaults
-to **10_000 momentums** (~28 hours at 10s cadence). This is an
-operator policy choice; the verifier honors whatever the embedded
-schedule declares. The buffer reflects "how far we believe the set
-stayed unchanged"; widening it widens trust, narrowing it forces
-more frequent release-cycle attestations.
-
-Multiple intervals may stack to form a piecewise schedule covering
-non-contiguous validated heights. Intervals **must not** overlap.
+A compact wire form (packed binary, possibly delta-encoded over
+the address byte stream) is a Branch 5b implementation choice; the
+table contents are the load-bearing decision and JSON is the
+reference shape.
 
 ---
 
@@ -146,36 +174,52 @@ non-contiguous validated heights. Intervals **must not** overlap.
 ```go
 // In a new internal/verify/producers.go (Branch 5b):
 
-type ProducerInterval struct {
-    ValidFrom         uint64
-    ValidThrough      uint64
-    ProducingAddrs    []chain.Address // sorted, deduped
+// ProducerCoverage declares a contiguous height range that the
+// schedule attests producer values for. Required ⇔ the verifier
+// will only consult schedule entries inside a declared range.
+type ProducerCoverage struct {
+    FromHeight    uint64  // inclusive
+    ThroughHeight uint64  // inclusive
+}
+
+// ProducerEntry is one (height, expected-producer-address) pair.
+// Sorted by Height; contiguous within each ProducerCoverage range.
+type ProducerEntry struct {
+    Height          uint64
+    ProducingAddr   chain.Address
 }
 
 type ProducerSchedule struct {
     ChainID       uint64
-    Intervals     []ProducerInterval // sorted by ValidFrom; non-overlapping
+    Coverage      []ProducerCoverage // sorted, non-overlapping
+    Entries       []ProducerEntry    // sorted, contiguous per coverage range
     GeneratedAt   int64              // Unix seconds at derivation time
     SourcePeers   []string           // peer URLs queried
-    SourceHeights map[string]uint64  // peer URL → height observed
-    ScheduleHash  chain.Hash         // SHA3-256 over canonical-encoded Intervals
+    SourceHeights map[string]uint64  // per peer, the frontier observed at derivation time
+    ScheduleHash  chain.Hash         // SHA3-256 over canonical encoding of ChainID+Coverage+Entries
 }
 ```
 
-Storage options for Branch 5b implementation (pick at impl time):
+Notes:
 
-- **Embedded in the binary** alongside the genesis trust root and
-  checkpoint list. Simplest; ties schedule freshness to release
-  cadence.
-- **`--schedule` CLI flag** loading a JSON file. Lets operators
-  pre-update the schedule between binary releases.
-- **Both**, with the flag overriding the embedded default. This is
-  the recommended default.
+- **Coverage is explicit.** A height outside any `ProducerCoverage`
+  range is `unknown`, never inferred. This closes Codex P1b.
+- **Entries are contiguous within each range.** No interpolation
+  between recorded heights; every height in a coverage range has
+  its own entry.
+- **`ScheduleHash` covers the substantive content** (chain ID,
+  coverage list, entry list). Tampering with any entry
+  invalidates the recompute and the verifier rejects the schedule
+  at load time.
+- **Metadata is non-load-bearing.** `GeneratedAt`, `SourcePeers`,
+  `SourceHeights` are operator audit trail; they're not part of
+  the hash because two operators deriving the same range from
+  the same peers would otherwise produce different hashes.
 
-The schedule file format is JSON for symmetry with `HeaderBundle`
-and the genesis config. `ScheduleHash` covers the full
-`Intervals` slice and `ChainID`; tampering with any interval
-invalidates the hash.
+The JSON form mirrors the Go struct; load-time validation rejects
+any schedule where (a) entries are not sorted, (b) entries do not
+densely cover every height in their declared coverage range, or
+(c) the recomputed `ScheduleHash` does not match the stored value.
 
 ---
 
@@ -189,13 +233,20 @@ The verifier's producer-authorization decision is **tri-state**:
 | Unauthorized | REJECT   | `ReasonUnauthorizedProducer`    |
 | Unknown      | REFUSED  | `ReasonProducerSetUnknown`      |
 
-"Unknown" fires when **no interval in the schedule covers the
-header's height**. The verifier deliberately does not extrapolate
-or guess.
+The lookup is exact-match:
 
-The check is exposed through a new `ProducerAuthorizer` interface
-(per the plan, attached to a new `VerifyOptions` struct — not
-`Policy`, which stays for resource and finality knobs):
+```
+expected := schedule.LookupEntry(header.Height)
+if header.Height is not present in any ProducerCoverage:
+    return ProducerSetUnknown
+if chain.PubKeyToAddress(header.PublicKey) == expected.ProducingAddr:
+    return Authorized
+return Unauthorized
+```
+
+The check is exposed through a new `ProducerAuthorizer` interface,
+attached to a new `VerifyOptions` struct (separate from `Policy`,
+which stays for resource and finality knobs):
 
 ```go
 type ProducerDecision int
@@ -215,8 +266,8 @@ type ProducerSource int
 
 const (
     ProducerSourceNone ProducerSource = iota
-    ProducerSourceOperatorAttested              // this design
-    ProducerSourceLocallyDerivedFromChain       // future phase
+    ProducerSourceOperatorAttested            // this design
+    ProducerSourceLocallyDerivedFromChain     // future phase
 )
 
 type ProducerAuthMode int
@@ -240,45 +291,54 @@ type VerifyOptions struct {
 Required-mode semantics:
 
 - `Mode == ProducerAuthRequired` + `Authorizer == nil` →
-  `REFUSED / ReasonProducerSetUnknown`. The verifier must not
-  silently downgrade.
-- `Mode == ProducerAuthDisabled` → producer check skipped; CLI
-  still prints the no-authorizer caveat (Branch 4 tier 1).
+  `REFUSED / ReasonProducerSetUnknown` for every header. The
+  verifier must not silently downgrade.
+- `Mode == ProducerAuthDisabled` → producer check skipped; the
+  CLI continues to print Branch-4 tier-1 caveat.
 
-The existing `VerifyHeaders(headers, state, policy)` remains a thin
-wrapper that calls `VerifyHeadersWithOptions(..., VerifyOptions{
-Policy: policy, ProducerAuth: ProducerAuthOptions{Mode:
-ProducerAuthDisabled}})`. Existing tests do not need to change.
+The existing `VerifyHeaders(headers, state, policy)` remains a
+thin wrapper that calls
+`VerifyHeadersWithOptions(headers, state, VerifyOptions{Policy:
+policy, ProducerAuth: ProducerAuthOptions{Mode:
+ProducerAuthDisabled}})`. **This is the only compatibility mode
+for `VerifyHeaders`.** No embedded-default-Required behavior;
+existing tests do not need to change, and production CLI paths
+opt in to Required explicitly. (Resolves Codex P2 — v1 left the
+compat mode ambiguous.)
 
 ---
 
-## 5. Caveat tier under operator-attested schedule
+## 5. Caveat tier under operator-attested per-momentum schedule
 
 When `Source() == ProducerSourceOperatorAttested` and the verifier
-runs in `ProducerAuthRequired` mode with non-nil authorizer, the
+runs in `ProducerAuthRequired` mode with a non-nil authorizer, the
 CLI ACCEPT caveat shifts from Branch 4's tier 1 to **tier 2**:
 
 ```
-CAVEAT: producer-set authorization is checked against an operator-
-attested schedule derived from N peer RPC snapshots, not from
-locally observed embedded-contract state. ACCEPT is not canonical-
+CAVEAT: producer authorization is checked against an operator-
+attested per-momentum schedule derived from N peer RPC snapshots,
+not from locally-derived consensus state. ACCEPT is not canonical-
 chain proof.
 ```
 
 Residual trust assumptions under tier 2:
 
-1. **Snapshot freshness.** A Pillar registered or revoked between
-   the schedule's derivation point and the header being verified
-   is invisible to the schedule.
-2. **Peer collusion against the snapshot.** N coordinated peers
-   serving the same wrong active set produce a self-consistent
-   schedule that an offline verifier cannot detect.
-3. **Release-binary provenance.** The embedded schedule travels
-   with the build; trusting the binary is required.
-4. **Interval boundary precision.** `ValidFrom`/`ValidThrough` are
-   operator declarations, not provable bounds.
+1. **Peer collusion against the snapshot.** N coordinated peers
+   serving the same wrong chain produce a self-consistent schedule
+   that an offline verifier cannot detect from snapshot data alone.
+   `tools/verify-mainnet-genesis` against independent operators
+   narrows but does not close this.
+2. **Release-binary provenance.** The schedule travels with — or
+   alongside — the build; trusting the schedule path requires
+   trusting the operator who shipped it. Future signing of the
+   schedule by an offline maintainer key tightens this.
+3. **Coverage gaps.** Headers outside any declared coverage range
+   return REFUSED rather than ACCEPT; not silently inferred.
 
-These all dissolve under tier 3 (locally derived) — a future phase.
+These all dissolve under tier 3 (locally-derived from chain
+data) — a future phase. The NG-class structural caveats (finality,
+canonical chain, censorship, cross-verifier agreement, state
+transitions) remain regardless of tier.
 
 ---
 
@@ -287,27 +347,40 @@ These all dissolve under tier 3 (locally derived) — a future phase.
 ### Initial schedule
 
 At Branch 5b cut, operators run `tools/derive-producer-schedule`
-against the **same three independent mainnet peers** used for
-`tools/verify-mainnet-genesis`. The current short-list lives in
-`reference_zenon_rpc_peers.md` (project memory) and includes
-operator URLs that have served consistent mainnet.
+against three independent mainnet peers (same short-list used for
+`tools/verify-mainnet-genesis`, recorded in
+`reference_zenon_rpc_peers.md` in project memory). The first
+schedule should cover the height range matching the embedded
+checkpoint list, derived by walking every momentum in that range.
 
-The first embedded schedule should cover roughly the height range
-the embedded checkpoint list covers, with `rotationBuffer = 10_000`
-either side.
+Derivation cost: ~1M momentums × ~3 peers × one RPC each ≈ 3M
+RPC calls. At a conservative 100 calls/s the run takes ~8 hours
+per peer. Run once per release; intermediate progress is
+checkpointable so a stalled run can resume.
 
 ### Update cadence
 
-The schedule must be re-derived and re-embedded any time a Pillar
-registration or revocation is observed on mainnet that crosses the
-current schedule's `ValidThrough`. In practice the release cadence
-governs this — when a new release ships, the schedule extends to
-cover the new height range.
+A new schedule must be derived and shipped any time the verifier
+needs to cover headers past the last entry's height. In practice
+the release cadence governs this. Operators running the watch loop
+against tip will see `REFUSED / ReasonProducerSetUnknown` once
+they pass the schedule's `ThroughHeight`, at which point the
+release process updates the schedule.
 
-If the verifier is run against headers past the last interval's
-`ValidThrough`, it returns `REFUSED / ReasonProducerSetUnknown`
-rather than guessing. Operators see the message and know to
-update.
+No automatic backdating before the schedule's `FromHeight`. A
+verifier asked about earlier heights returns REFUSED rather than
+guessing — operators must update the schedule with the additional
+coverage.
+
+### Failure modes
+
+- **Peer disagreement during derivation** → tool aborts, no
+  schedule shipped, operator investigates.
+- **Schedule load fails ScheduleHash recompute** → verifier
+  refuses to start in `Required` mode; surfaces the error to the
+  operator.
+- **Header height outside coverage** → REFUSED, not silently
+  ACCEPTed.
 
 ---
 
@@ -315,19 +388,23 @@ update.
 
 To prevent scope creep in Branch 5b:
 
-1. **Do not claim canonical-chain determination.** Producer
+1. **Do not claim canonical-chain determination.** Per-momentum
    authorization narrows the trust gap; it does not close NG6.
 2. **Do not claim multi-peer RPC agreement is consensus quorum
-   proof.** The MultiClient detects peer disagreement; it does
+   proof.** The `MultiClient` detects peer disagreement; it does
    not prove what consensus actually agreed to.
 3. **Do not silently skip producer authorization in production CLI
    paths.** Defaults must require the check; tests may explicitly
    disable it via `ProducerAuthDisabled`.
-4. **Do not introduce embedded-contract state shadowing in
-   Branch 5b.** That is the (deferred) tier-3 future phase.
+4. **Do not introduce embedded-contract state shadowing or
+   election-algorithm replay in Branch 5b.** That is the
+   tier-3 future phase.
 5. **Do not change `Policy` shape.** Producer auth lives on
    `VerifyOptions.ProducerAuth`, separate from `Policy`'s resource
    and finality knobs.
+6. **Do not extrapolate coverage.** A height outside any declared
+   range is `unknown`, never silently inferred from neighboring
+   entries. (Codex P1b lock-in.)
 
 ---
 
@@ -336,56 +413,68 @@ To prevent scope creep in Branch 5b:
 The implementation branch must include the following tests:
 
 - Authorized producer at covered height → ACCEPT (tier-2 caveat).
-- Unauthorized producer at covered height → REJECT /
-  `ReasonUnauthorizedProducer`.
-- No schedule interval covers the height → REFUSED /
+- Unauthorized producer at covered height (i.e., header's pubkey
+  derives to a different address than the schedule's entry for
+  that height) → REJECT / `ReasonUnauthorizedProducer`.
+- Height outside any coverage range → REFUSED /
   `ReasonProducerSetUnknown`.
 - `ProducerAuthRequired` with nil authorizer → REFUSED /
-  `ReasonProducerSetUnknown` (no silent skip).
-- `ProducerAuthDisabled` preserves Branch-4 tier-1 behavior.
-- Transition boundary: a key valid in interval[k] but signed at a
-  height past `interval[k].ValidThrough` is unknown (not
-  authorized).
+  `ReasonProducerSetUnknown` for every input header (no silent
+  skip).
+- `ProducerAuthDisabled` preserves Branch-4 tier-1 behavior;
+  `VerifyHeaders` wrapper continues to work unchanged.
+- Schedule load rejects tampered entries (mutating any entry
+  invalidates the ScheduleHash recompute).
+- Schedule load rejects non-contiguous entries within a declared
+  coverage range.
 - Tooling: schedule derivation across 3 mock peers with consistent
-  responses succeeds; one disagreeing peer aborts derivation.
-- ScheduleHash tamper-detection: mutating any interval after
-  embedding invalidates the recompute.
+  responses succeeds; one disagreeing peer at any height aborts
+  derivation.
+- A previously-active Pillar key signing a header for a slot it
+  was not elected for → REJECT / `ReasonUnauthorizedProducer`.
+  (Codex P1a regression coverage.)
 
 ---
 
 ## 9. Open implementation decisions (not blocking the design gate)
 
-These are choices Branch 5b can make at implementation time without
-further design review:
+These are choices Branch 5b can make at implementation time
+without further design review:
 
-1. **`rotationBuffer` default.** Plan calls for 10_000 momentums;
-   may be tightened if mainnet Pillar churn data warrants.
-2. **Schedule storage.** Embedded + override flag is recommended;
-   the choice between Go literal and embed-via-`//go:embed` is a
-   build-time detail.
-3. **Page size for `embedded.pillar.getAll`.** Existing fetcher
-   patterns in `internal/fetch` can be reused.
-4. **Backwards compatibility.** Whether `VerifyHeaders` wraps to
-   `Disabled` (smallest surface) or to `Required` with an embedded
-   default schedule (smaller security gap) is a Branch 5b call;
-   the design admits both.
+1. **Schedule binary format.** JSON is the canonical reference;
+   a packed binary form for the 24MB-scale shipping case is a
+   build-time optimization decision.
+2. **Pagination/checkpointing in the derivation tool.** The
+   shape (~8h runs, resume-from-height) is set; the on-disk
+   intermediate format is a tooling detail.
+3. **Sidecar location convention.** Whether the default search
+   path is `~/.zenon-spv/schedule.json`, a flag-only model, or
+   embed-for-test/sidecar-for-prod. The current recommendation is
+   flag-only with no default search path, to force an explicit
+   operator choice.
+
+`VerifyHeaders` compat mode is locked to `ProducerAuthDisabled` and
+is no longer an open question (Codex P2 resolved in §4).
 
 ---
 
 ## 10. Follow-up after Branch 5b
 
 - **Tier 3 (locally derived):** observe Pillar register/revoke
-  events from committed embedded-contract account blocks; rebuild
-  the active set as the verifier walks the chain. Drops the
-  schedule-source caveat entirely.
+  events from committed embedded-contract account blocks; replay
+  the election algorithm; drop the per-momentum schedule. Closes
+  the schedule-source caveat entirely.
 - **Schedule signing:** if release-binary provenance becomes
   insufficient, sign the schedule JSON with an offline maintainer
   key and verify on load.
 - **Conformance update:** flip the §10 "producer-set check" entry
-  in `docs/conformance.md` once Branch 5b lands.
-- **Vault ADR 0005:** write a new ADR superseding 0004 once the
-  implementation is in place; record the actual chosen defaults
-  for `rotationBuffer`, attestation threshold, etc.
+  in `docs/conformance.md` once Branch 5b lands; the trust-model
+  doc's tier-2 caveat should match what the CLI prints.
+- **Vault ADR 0005:** write a new ADR superseding 0004 once
+  Branch 5b ships, recording the actual chosen defaults
+  (attestation threshold, sidecar load path, schedule wire
+  format). The vault update is the maintainer's responsibility;
+  from this repo the vault is treated as read-only.
 
 ---
 
@@ -395,10 +484,18 @@ further design review:
   defer decision and option enumeration.
 - vault `spec/architecture/bounded-verification-boundaries.md` §4
   — G1 requires "unforgeable validator or quorum signatures."
-- `reference/go-zenon/vm/embedded/definition/pillars.go` —
-  `PillarInfo` and `IsActive` definition.
-- `reference/go-zenon/chain/momentum/embedded.go` —
-  `GetActivePillars` and the `Producing: registration.BlockProducingAddress`
-  binding that ties producing keys to the contract state.
-- `internal/chain` — existing `PubKeyToAddress` used for F1
-  segment-block binding; reused by the authorizer.
+- `reference/go-zenon/consensus/consensus.go:73-95` —
+  `GetMomentumProducer` and `VerifyMomentumProducer`. Establishes
+  per-slot, not per-set, authorization.
+- `reference/go-zenon/consensus/election.go:78-90` —
+  `ElectionByTime` resolves to a per-tick `electionResult` with a
+  `Producers []ProducerEvent` list pinning each producer to a
+  `StartTime`.
+- `reference/go-zenon/chain/nom/momentum.go:84-90` —
+  `momentum.Producer() = types.PubKeyToAddress(m.PublicKey)`,
+  matching the SPV's existing `chain.PubKeyToAddress` path.
+- `internal/chain/account_block.go` — existing `PubKeyToAddress`
+  used for F1 segment-block binding; reused by the authorizer.
+- Codex review of v1 (2026-05-20) — P1a (active-set
+  insufficient), P1b (single-snapshot extrapolation unsafe), P2
+  (compat-mode contradiction). All three closed in v2.
