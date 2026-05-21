@@ -138,8 +138,10 @@ func LoadHeaderState(path string) (HeaderState, error) {
 // mainnet verifier at testnet state.
 //
 // If policy.W has shrunk since the file was written, the loaded
-// retained window is truncated to keep the most recent policy.W
-// headers and Capacity is updated to match the new policy.
+// retained window is truncated to keep the most recent
+// capacityForPolicy(policy) == policy.W + 1 headers (the spec
+// §2.3 capacity that keeps the target plus W headers past it),
+// and Capacity is updated to match the new policy.
 func LoadOrInit(path string, genesis GenesisTrustRoot, policy Policy) (HeaderState, error) {
 	loaded, err := LoadHeaderState(path)
 	if errors.Is(err, os.ErrNotExist) {
