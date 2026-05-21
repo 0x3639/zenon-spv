@@ -19,11 +19,18 @@
 >
 > **Revision history**:
 > - v1 (b556f2c, 2026-05-20) — active-set membership per interval.
-> - **v2 (this revision, 2026-05-20)** — per-momentum expected-producer
->   schedule, in response to Codex review. Closes Codex P1a
->   (active-set admits an attack where one Pillar key signs slots it
->   was not elected to produce) and P1b (single-snapshot interval
->   extrapolation is unsafe).
+> - v2 (be9ccdd, 2026-05-20) — per-momentum expected-producer
+>   schedule. Closed Codex review v1's P1a (active-set admits an
+>   attack where one Pillar key signs slots it was not elected to
+>   produce) and P1b (single-snapshot interval extrapolation is
+>   unsafe).
+> - **v3 (this revision, 2026-05-20)** — schedule entries also bind
+>   the expected `TimestampUnix`, and the authorizer interface
+>   takes height + timestamp + pubkey. Closes Codex review v2's
+>   P1 (height-only schedule still admits a timestamp-mutation
+>   attack: an elected producer signs at a timestamp inside their
+>   height but not equal to their slot's StartTime; go-zenon
+>   rejects, height-only SPV did not).
 
 This document is the design gate for Branch 5b. It records the
 chosen producer-verification source, the schedule shape, the
@@ -136,11 +143,15 @@ peers via the existing JSON-RPC. For each height H in the range:
 
 1. Fetch the momentum at H from every peer (already supported via
    `internal/fetch.MultiClient`).
-2. Record `(H → chain.PubKeyToAddress(momentum.PublicKey))`.
-3. The N peer responses must agree on the producer address byte
-   for byte. Any disagreement aborts derivation — the tool refuses
-   to emit a schedule, the operator must investigate, and no
-   caveat downgrade follows.
+2. Record `(H → (momentum.TimestampUnix, chain.PubKeyToAddress(momentum.PublicKey)))`.
+3. The N peer responses must agree on BOTH the timestamp and the
+   producer address, byte for byte. Any disagreement aborts
+   derivation — the tool refuses to emit a schedule, the operator
+   must investigate, and no caveat downgrade follows. Recording the
+   timestamp is load-bearing: go-zenon's
+   `GetMomentumProducer(timestamp)` resolves the expected producer
+   via the timestamp, not the height, so the SPV must verify both
+   to avoid admitting a timestamp-mutation attack.
 
 The tool produces a JSON file containing the per-height table plus
 metadata (§3). Each schedule explicitly declares which height range
@@ -154,13 +165,13 @@ configurable via the tool's `--peers` flag.
 
 ### Size and shipping
 
-A checkpoint-interval range (~1M momentums) produces ~24MB of
-table data (1M × 24 bytes for `(uint64, Address)` packed). Too
-large to embed in the binary. Branch 5b ships the schedule as a
-JSON sidecar loaded via `--schedule <path>` at the CLI. The
-embedded-default route remains available for short ranges if a
-future use case warrants it; the default ship-mode for mainnet is
-sidecar.
+A checkpoint-interval range (~1M momentums) produces ~32MB of
+table data (1M × 32 bytes for `(uint64 Height, uint64 TimestampUnix,
+20-byte Address)` packed). Too large to embed in the binary. Branch
+5b ships the schedule as a JSON sidecar loaded via `--schedule
+<path>` at the CLI. The embedded-default route remains available
+for short ranges if a future use case warrants it; the default
+ship-mode for mainnet is sidecar.
 
 A compact wire form (packed binary, possibly delta-encoded over
 the address byte stream) is a Branch 5b implementation choice; the
@@ -182,11 +193,15 @@ type ProducerCoverage struct {
     ThroughHeight uint64  // inclusive
 }
 
-// ProducerEntry is one (height, expected-producer-address) pair.
-// Sorted by Height; contiguous within each ProducerCoverage range.
+// ProducerEntry is one (height, expected-timestamp, expected-producer-address)
+// triple. Sorted by Height; contiguous within each ProducerCoverage range.
+// The timestamp is included because go-zenon resolves the expected producer
+// via timestamp (consensus.go GetMomentumProducer); a height-only entry
+// would admit a timestamp-mutation attack (Codex review v2 P1).
 type ProducerEntry struct {
-    Height          uint64
-    ProducingAddr   chain.Address
+    Height        uint64
+    TimestampUnix uint64
+    ProducingAddr chain.Address
 }
 
 type ProducerSchedule struct {
@@ -233,12 +248,20 @@ The verifier's producer-authorization decision is **tri-state**:
 | Unauthorized | REJECT   | `ReasonUnauthorizedProducer`    |
 | Unknown      | REFUSED  | `ReasonProducerSetUnknown`      |
 
-The lookup is exact-match:
+The lookup is exact-match on BOTH height and timestamp:
 
 ```
 expected := schedule.LookupEntry(header.Height)
 if header.Height is not present in any ProducerCoverage:
     return ProducerSetUnknown
+if header.TimestampUnix != expected.TimestampUnix:
+    // The header claims a different slot time than the schedule
+    // attests for this height — this is the timestamp-mutation
+    // attack: an elected producer signing inside their height
+    // but at a timestamp not equal to their slot's StartTime.
+    // go-zenon's GetMomentumProducer(timestamp) would reject; so
+    // must the SPV.
+    return Unauthorized
 if chain.PubKeyToAddress(header.PublicKey) == expected.ProducingAddr:
     return Authorized
 return Unauthorized
@@ -258,7 +281,10 @@ const (
 )
 
 type ProducerAuthorizer interface {
-    Authorize(height uint64, pubkey []byte) ProducerDecision
+    // Authorize takes (height, timestamp, pubkey). The timestamp
+    // is non-optional: a height-only check would admit the
+    // timestamp-mutation attack (Codex review v2 P1).
+    Authorize(height uint64, timestampUnix uint64, pubkey []byte) ProducerDecision
     Source() ProducerSource // for caveat tier selection
 }
 
@@ -432,7 +458,13 @@ The implementation branch must include the following tests:
   derivation.
 - A previously-active Pillar key signing a header for a slot it
   was not elected for → REJECT / `ReasonUnauthorizedProducer`.
-  (Codex P1a regression coverage.)
+  (Codex review v1 P1a regression coverage.)
+- A header at a covered height with the schedule-expected
+  producing address but a mutated `TimestampUnix` (different from
+  `schedule[height].TimestampUnix`) → REJECT /
+  `ReasonUnauthorizedProducer`. (Codex review v2 P1 regression
+  coverage — proves the SPV matches go-zenon's
+  `GetMomentumProducer(timestamp)` semantics.)
 
 ---
 
@@ -499,3 +531,9 @@ is no longer an open question (Codex P2 resolved in §4).
 - Codex review of v1 (2026-05-20) — P1a (active-set
   insufficient), P1b (single-snapshot extrapolation unsafe), P2
   (compat-mode contradiction). All three closed in v2.
+- Codex review of v2 (2026-05-20) — P1 (height-only schedule
+  admits a timestamp-mutation attack), P2 (vault ADR 0004 still
+  not updated — out-of-scope per project read-only convention),
+  P3 (`trust-model.md` forward-reference still broken on main
+  until Branch 4 merges). P1 closed in v3 (this revision); P2
+  and P3 are external dependencies and require separate action.
