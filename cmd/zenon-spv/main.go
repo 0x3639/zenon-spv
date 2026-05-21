@@ -56,6 +56,7 @@ package main
 import (
 	"context"
 	"encoding/hex"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -284,8 +285,16 @@ func prepareVerifierContext(name string, args []string) (verifierContext, int) {
 		fmt.Fprintf(os.Stderr, "genesis: %v\n", err)
 		return verifierContext{}, 70
 	}
-	bundle, err := proof.LoadHeaderBundle(bundlePath)
+	policy := verify.PolicyForTier(*tier)
+	bundle, err := proof.LoadHeaderBundleBounded(bundlePath, policy.MaxBundleBytes)
 	if err != nil {
+		if errors.Is(err, proof.ErrBundleTooLarge) {
+			// REFUSED, not REJECT: too-big is a guardrail breach,
+			// not proof of badness. Exit code 2 per the documented
+			// matrix.
+			fmt.Printf("REFUSED %s %v\n", verify.ReasonOversizedBundle, err)
+			return verifierContext{}, 2
+		}
 		fmt.Fprintf(os.Stderr, "bundle: %v\n", err)
 		return verifierContext{}, 70
 	}
@@ -294,8 +303,6 @@ func prepareVerifierContext(name string, args []string) (verifierContext, int) {
 			verify.ReasonChainIDMismatch, bundle.ChainID, genesis.ChainID)
 		return verifierContext{}, 1
 	}
-
-	policy := verify.PolicyForTier(*tier)
 	resumed := false
 	var state verify.HeaderState
 	if *statePath != "" {
@@ -351,12 +358,97 @@ func prepareVerifierContext(name string, args []string) (verifierContext, int) {
 		return verifierContext{}, outcomeExitCode(r.Outcome)
 	}
 
+	// Aggregate resource-bound preflight (Branch 2b). Per-item
+	// caps (e.g., MaxFlatEvidenceMembers) live inside the verifier
+	// for callers that bypass the CLI; the AGGREGATE caps must run
+	// before the verifier sees the bundle so a malicious shape
+	// (many small items each under the per-item cap) is refused
+	// before any heavy work.
+	if r := preflightBundleBounds(bundle, policy); r.Outcome != verify.OutcomeAccept {
+		fmt.Printf("bundle: %s\n", r)
+		return verifierContext{}, outcomeExitCode(r.Outcome)
+	}
+
 	return verifierContext{
 		bundle:    bundle,
 		state:     state,
 		opts:      opts,
 		statePath: *statePath,
 	}, 0
+}
+
+// preflightBundleBounds enforces the aggregate (per-bundle) resource
+// caps that are NOT visible to VerifyHeaders/VerifyCommitment/
+// VerifySegment in isolation. Per-item caps live inside the
+// verifier; this function catches the n × m shapes where each
+// individual item fits but the bundle as a whole is hostile.
+//
+// Returns ACCEPT when every aggregate cap holds (or is disabled);
+// otherwise REFUSED with the appropriate ReasonOversized* code.
+// Per-item REJECT cases are not produced here — those are evaluation
+// outcomes, not preflight ones.
+func preflightBundleBounds(bundle proof.HeaderBundle, policy verify.Policy) verify.Result {
+	if policy.MaxCommitments > 0 && len(bundle.Commitments) > policy.MaxCommitments {
+		return verify.Result{
+			Outcome:  verify.OutcomeRefused,
+			Reason:   verify.ReasonOversizedEvidence,
+			Message:  fmt.Sprintf("commitments=%d > MaxCommitments=%d", len(bundle.Commitments), policy.MaxCommitments),
+			FailedAt: -1,
+		}
+	}
+	if policy.MaxTotalFlatEvidenceMembers > 0 {
+		var total int
+		for _, c := range bundle.Commitments {
+			if c.Flat == nil {
+				continue
+			}
+			n := len(c.Flat.SortedHeaders)
+			// Overflow-safe (int + int can overflow on 32-bit but
+			// not 64-bit Go; we still guard for clarity and parity
+			// with the design doc's "overflow-safe addition" note).
+			if n > 0 && total > policy.MaxTotalFlatEvidenceMembers-n {
+				total = policy.MaxTotalFlatEvidenceMembers + 1
+				break
+			}
+			total += n
+		}
+		if total > policy.MaxTotalFlatEvidenceMembers {
+			return verify.Result{
+				Outcome:  verify.OutcomeRefused,
+				Reason:   verify.ReasonOversizedEvidence,
+				Message:  fmt.Sprintf("aggregate flat evidence members > MaxTotalFlatEvidenceMembers=%d", policy.MaxTotalFlatEvidenceMembers),
+				FailedAt: -1,
+			}
+		}
+	}
+	if policy.MaxSegments > 0 && len(bundle.Segments) > policy.MaxSegments {
+		return verify.Result{
+			Outcome:  verify.OutcomeRefused,
+			Reason:   verify.ReasonOversizedSegment,
+			Message:  fmt.Sprintf("segments=%d > MaxSegments=%d", len(bundle.Segments), policy.MaxSegments),
+			FailedAt: -1,
+		}
+	}
+	if policy.MaxTotalSegmentBlocks > 0 {
+		var total int
+		for _, s := range bundle.Segments {
+			n := len(s.Blocks)
+			if n > 0 && total > policy.MaxTotalSegmentBlocks-n {
+				total = policy.MaxTotalSegmentBlocks + 1
+				break
+			}
+			total += n
+		}
+		if total > policy.MaxTotalSegmentBlocks {
+			return verify.Result{
+				Outcome:  verify.OutcomeRefused,
+				Reason:   verify.ReasonOversizedSegment,
+				Message:  fmt.Sprintf("aggregate segment blocks > MaxTotalSegmentBlocks=%d", policy.MaxTotalSegmentBlocks),
+				FailedAt: -1,
+			}
+		}
+	}
+	return verify.Result{Outcome: verify.OutcomeAccept, Reason: verify.ReasonOK, FailedAt: -1}
 }
 
 // persistIfRequested writes state to path if path is non-empty.

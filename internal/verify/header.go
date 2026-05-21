@@ -66,7 +66,8 @@ func VerifyHeadersWithOptions(headers []chain.Header, state HeaderState, opts Ve
 		return refuse(ReasonMissingEvidence, "no headers supplied"), state
 	}
 	if policy.MaxHeaders > 0 && len(headers) > policy.MaxHeaders {
-		return refuse(ReasonMissingEvidence, fmt.Sprintf("input %d exceeds MaxHeaders=%d", len(headers), policy.MaxHeaders)), state
+		return refuse(ReasonOversizedHeaders,
+			fmt.Sprintf("input %d exceeds MaxHeaders=%d", len(headers), policy.MaxHeaders)), state
 	}
 
 	// Required mode with no authorizer is REFUSED — Codex review v1

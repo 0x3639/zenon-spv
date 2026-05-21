@@ -94,6 +94,17 @@ func VerifySegment(state HeaderState, segment proof.AccountSegment, commitments 
 			FailedAt: -1,
 		}}}
 	}
+	if policy.MaxSegmentBlocks > 0 && len(segment.Blocks) > policy.MaxSegmentBlocks {
+		// Per-segment DoS guardrail (Branch 2b). Surface as a single
+		// synthetic REFUSED — same shape as the F6 empty-segment
+		// path — so Worst() and exit-code mapping behave uniformly.
+		return SegmentResult{Blocks: []Result{{
+			Outcome:  OutcomeRefused,
+			Reason:   ReasonOversizedSegment,
+			Message:  fmt.Sprintf("segment for %x has %d blocks > MaxSegmentBlocks=%d", segment.Address, len(segment.Blocks), policy.MaxSegmentBlocks),
+			FailedAt: -1,
+		}}}
+	}
 	out := SegmentResult{Blocks: make([]Result, len(segment.Blocks))}
 	lookup := indexCommitments(commitments)
 

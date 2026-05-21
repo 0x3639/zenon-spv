@@ -57,6 +57,10 @@ const (
 	ReasonParentNotAccepted            // Segment linkage: previous block in the segment did not ACCEPT, so this block cannot be part of the verified chain
 	ReasonUnauthorizedProducer         // Branch 5b: producer authorization mismatch (timestamp or producing-address disagrees with schedule)
 	ReasonProducerSetUnknown           // Branch 5b: no producer schedule covers this height; verifier refuses to extrapolate
+	ReasonOversizedBundle              // Branch 2b: bundle wire size exceeds Policy.MaxBundleBytes
+	ReasonOversizedHeaders             // Branch 2b: header count exceeds Policy.MaxHeaders
+	ReasonOversizedEvidence            // Branch 2b: commitment evidence size exceeds per-commitment or aggregate cap
+	ReasonOversizedSegment             // Branch 2b: segment size exceeds per-segment or aggregate cap
 )
 
 // String returns a stable, snake-case-equivalent name for serialization.
@@ -108,6 +112,14 @@ func (r ReasonCode) String() string {
 		return "ReasonUnauthorizedProducer"
 	case ReasonProducerSetUnknown:
 		return "ReasonProducerSetUnknown"
+	case ReasonOversizedBundle:
+		return "ReasonOversizedBundle"
+	case ReasonOversizedHeaders:
+		return "ReasonOversizedHeaders"
+	case ReasonOversizedEvidence:
+		return "ReasonOversizedEvidence"
+	case ReasonOversizedSegment:
+		return "ReasonOversizedSegment"
 	default:
 		return fmt.Sprintf("ReasonCode(%d)", int(r))
 	}

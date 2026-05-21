@@ -1,6 +1,7 @@
 package proof
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -85,5 +86,72 @@ func TestLoadHeaderBundle_MissingFile(t *testing.T) {
 	_, err := LoadHeaderBundle("/nonexistent/bundle.json")
 	if err == nil {
 		t.Fatal("expected error on missing file")
+	}
+}
+
+// TestLoadHeaderBundleBounded_AcceptsUnderCap verifies the bounded
+// loader returns the same parsed bundle for files within the cap.
+func TestLoadHeaderBundleBounded_AcceptsUnderCap(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "b.json")
+	b, err := MarshalHeaderBundleJSON(sampleBundle())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, b, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Cap well above the file size.
+	got, err := LoadHeaderBundleBounded(path, 1<<20)
+	if err != nil {
+		t.Fatalf("LoadHeaderBundleBounded under cap: %v", err)
+	}
+	if got.Version != WireVersion {
+		t.Fatalf("version: %d", got.Version)
+	}
+}
+
+// TestLoadHeaderBundleBounded_RefusesOverCap covers the DoS
+// guardrail: a file larger than maxBytes returns ErrBundleTooLarge
+// without parsing the full content. This is the load-time check
+// that exists specifically to prevent a hostile multi-GB bundle
+// from OOMing the verifier before validation.
+func TestLoadHeaderBundleBounded_RefusesOverCap(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "big.json")
+	// 1 MiB of zeros — not valid JSON, but we won't get that far:
+	// LimitReader truncates the read at maxBytes+1 and ErrBundleTooLarge
+	// returns before json.Unmarshal sees anything.
+	if err := os.WriteFile(path, make([]byte, 1024*1024), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := LoadHeaderBundleBounded(path, 1024) // cap = 1 KiB
+	if err == nil {
+		t.Fatal("expected ErrBundleTooLarge for over-cap file")
+	}
+	if !errors.Is(err, ErrBundleTooLarge) {
+		t.Errorf("expected errors.Is(ErrBundleTooLarge), got %v", err)
+	}
+}
+
+// TestLoadHeaderBundleBounded_ZeroCapDisables matches the
+// documented zero-disables semantics so existing tests and
+// tooling that don't care about caps still work.
+func TestLoadHeaderBundleBounded_ZeroCapDisables(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "b.json")
+	b, err := MarshalHeaderBundleJSON(sampleBundle())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, b, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := LoadHeaderBundleBounded(path, 0)
+	if err != nil {
+		t.Fatalf("zero cap should disable check, got %v", err)
+	}
+	if got.Version != WireVersion {
+		t.Fatalf("version: %d", got.Version)
 	}
 }

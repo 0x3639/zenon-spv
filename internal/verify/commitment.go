@@ -80,6 +80,14 @@ func VerifyCommitment(state HeaderState, evidence proof.CommitmentEvidence, poli
 			FailedAt: -1,
 		}
 	}
+	if policy.MaxFlatEvidenceMembers > 0 && len(evidence.Flat.SortedHeaders) > policy.MaxFlatEvidenceMembers {
+		return Result{
+			Outcome:  OutcomeRefused,
+			Reason:   ReasonOversizedEvidence,
+			Message:  fmt.Sprintf("flat evidence members=%d exceeds MaxFlatEvidenceMembers=%d", len(evidence.Flat.SortedHeaders), policy.MaxFlatEvidenceMembers),
+			FailedAt: -1,
+		}
+	}
 	recomputed := flatContentHash(evidence.Flat.SortedHeaders)
 	if recomputed != header.ContentHash {
 		return Result{
