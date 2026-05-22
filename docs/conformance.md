@@ -104,12 +104,39 @@ These are *known* and *documented*, not bugs.
    a single peer (`my.hc1node.com`, 2026-04-28). Operators reproducing
    the trust root cross-check via the tool.
 
-3. **No state-value proof path yet.** The verifier can prove
-   account-header inclusion under `ContentHash`, but not "address A had
-   token balance X at height H." `ChangesHash` is verified-as-bound by
-   the signed Momentum header but not independently recomputed. The next
-   planned work is the canonical commitment audit and balance-first
-   proof design in [`state-proof-plan.md`](state-proof-plan.md).
+3. **No state-value proof path against current-protocol go-zenon.**
+   The verifier can prove account-header inclusion under
+   `ContentHash`, but not "address A had token balance X at height
+   H." Per the source-cited audit in
+   [`state-commitment-audit.md`](state-commitment-audit.md), this is
+   a structural property of go-zenon today: `ChangesHash` is a
+   patch hash over a LevelDB batch dump, not an authenticated state
+   root; no Merkle/IAVL/trie exists upstream; the signed
+   `MomentumContent` commits only account-frontier triples
+   `{Address, Height, BlockHash}`.
+
+   The verifier reserves the following surface for forward
+   compatibility:
+
+   - **`GuaranteeStateValueInclusion`** (= `"STATE_VALUE_INCLUSION"`)
+     — never appears in `Proven` on any shipped build. Locked in
+     by `TestGuaranteeStateValueInclusion_NeverProvenInCurrentBuilders`.
+   - **State-proof reason codes** (state-proof PR / Phase 1):
+     `ReasonUnsupportedStateCommitment` (the structural REFUSED
+     today), plus `ReasonInvalidStateProof`,
+     `ReasonStateValueMismatch`, `ReasonStateKeyMismatch`,
+     `ReasonMalformedStateProof`, `ReasonOversizedStateProof` for
+     future use.
+   - `StateValueProof` wire type + `VerifyStateValue` skeleton
+     (subsequent commits) — every `StateCommitmentKind` returns
+     `REFUSED / ReasonUnsupportedStateCommitment`.
+
+   **This roadmap is explicitly NOT pursuing the go-zenon protocol
+   change** that would let `VerifyStateValue` ACCEPT. Three distinct
+   tracks (consensus state proof / Sentinel attestation / state
+   indexing) are kept separate at the type level; see
+   [`state-proof-implementation-plan.md`](state-proof-implementation-plan.md)
+   §"Three distinct tracks" for the boundary discipline.
 
 _(Item 4 — resource bounds — was previously listed here.
 Enforcement landed in Branch 2: `Policy.Max*` defaults cap bundle

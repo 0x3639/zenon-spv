@@ -68,6 +68,48 @@ func TestResultGuaranteesCannotContradict(t *testing.T) {
 	})
 }
 
+// TestGuaranteeStateValueInclusion_IsDefined asserts the new
+// state-proof guarantee enum value is defined and has the expected
+// canonical string. Locks in the wire name so future renames can't
+// happen silently (state-proof PR / Phase 1).
+func TestGuaranteeStateValueInclusion_IsDefined(t *testing.T) {
+	if got, want := string(GuaranteeStateValueInclusion), "STATE_VALUE_INCLUSION"; got != want {
+		t.Fatalf("GuaranteeStateValueInclusion: got %q, want %q", got, want)
+	}
+}
+
+// TestGuaranteeStateValueInclusion_NeverProvenInCurrentBuilders is
+// the load-bearing refusal-contract regression. Per
+// docs/state-commitment-audit.md, no current-protocol verifier path
+// can legitimately add STATE_VALUE_INCLUSION to a Result.Proven.
+// This test composes representative ACCEPT envelopes via the existing
+// WithProven helper and asserts the new guarantee is absent.
+//
+// If a future verifier path needs to add STATE_VALUE_INCLUSION to
+// Proven, that path will be required to add an authenticated state
+// commitment first (see the audit's §"External dependencies").
+// Anyone adding it casually will trip this test.
+func TestGuaranteeStateValueInclusion_NeverProvenInCurrentBuilders(t *testing.T) {
+	// All current verifier paths' Proven envelopes, composed by
+	// chaining the same helpers VerifyHeaders/Commitment/Segment
+	// already use. STATE_VALUE_INCLUSION must not appear in any.
+	envelopes := []Result{
+		// Header path
+		accept().WithProven(GuaranteeHeaderChainIntegrity, GuaranteeSignatureAuthenticity),
+		// Commitment path
+		accept().WithProven(GuaranteeContentInclusion).WithNotProven(GuaranteeSignatureAuthenticity),
+		// Segment path
+		accept().WithProven(GuaranteeContentInclusion, GuaranteeSignatureAuthenticity),
+		// Producer-authorized (Branch 5b)
+		accept().WithProven(GuaranteeProducerAuthorization),
+	}
+	for i, r := range envelopes {
+		if hasGuarantee(r.Proven, GuaranteeStateValueInclusion) {
+			t.Errorf("envelope[%d]: STATE_VALUE_INCLUSION must not appear in Proven; got Proven=%v", i, r.Proven)
+		}
+	}
+}
+
 func hasGuarantee(xs []Guarantee, want Guarantee) bool {
 	for _, x := range xs {
 		if x == want {

@@ -12,6 +12,20 @@ const (
 	GuaranteeProducerAuthorization Guarantee = "PRODUCER_AUTHORIZATION"
 	GuaranteeCanonicality          Guarantee = "CANONICALITY"
 	GuaranteeStateTransition       Guarantee = "STATE_TRANSITION"
+
+	// GuaranteeStateValueInclusion is reserved for proving that a
+	// value at a (key, height) pair was committed under a
+	// consensus-bound state commitment. It MUST mean "proven under a
+	// consensus-bound authenticated state root" — never "attested by
+	// an operator provider" or "fetched from a node RPC". Per
+	// docs/state-commitment-audit.md, current-protocol go-zenon has
+	// no such root, so this guarantee never appears in Proven on any
+	// shipped build. A future Sentinel-attested mode (if pursued)
+	// would introduce a separate value (e.g.
+	// GuaranteeStateValueAttested) rather than reuse this one. See
+	// docs/state-proof-implementation-plan.md §"Three distinct
+	// tracks" for the scope boundary that motivates this discipline.
+	GuaranteeStateValueInclusion Guarantee = "STATE_VALUE_INCLUSION"
 )
 
 // TrustAssumption is a machine-readable external dependency or

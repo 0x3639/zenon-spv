@@ -96,11 +96,38 @@ rationale.)_
    but not independently recomputed — that would require
    re-executing every embedded contract call.
 
-8. **State-value or balance inclusion.** Current `CommitmentEvidence`
-   proves account-header inclusion under `ContentHash`; it does not
-   prove that an address had balance X or state value V at a height.
-   The planned path toward that capability is
-   [`state-proof-plan.md`](state-proof-plan.md).
+8. **State-value or balance inclusion (NG-state, also tracked as the
+   `STATE_VALUE_INCLUSION` guarantee in code).** Current
+   `CommitmentEvidence` proves account-header inclusion under
+   `ContentHash`; it does not prove that an address had balance X or
+   state value V at a height. The verifier reserves
+   `GuaranteeStateValueInclusion` as a future guarantee value AND
+   the `VerifyStateValue` API surface for accepting consensus
+   state-value proofs, but ships them as **refused-by-design today**:
+   per the source-cited audit in
+   [`state-commitment-audit.md`](state-commitment-audit.md),
+   current-protocol go-zenon has no authenticated state root for an
+   accepting `StateValueProof` to bind to. The wire envelope exists
+   for forward compatibility; this roadmap is explicitly NOT
+   pursuing the go-zenon protocol change that would unblock it.
+
+   The distinction matters in three ways:
+
+   - **`STATE_VALUE_INCLUSION` MUST mean "proven under a
+     consensus-bound state commitment."** Never "attested by a
+     provider" or "fetched from an RPC." Calling an attested value
+     `STATE_VALUE_INCLUSION` would lie about the trust assumption.
+   - A future **Sentinel/Sentry-attested mode** (if ever pursued)
+     lands as a SEPARATE mode and a SEPARATE `Guarantee` value
+     (e.g. `STATE_VALUE_ATTESTED`). It is a weaker trust tier and
+     must be named distinctly.
+   - **State indexing / balance lookup** infrastructure (node RPCs,
+     explorers, wallets) is provider work, not verification work,
+     and lives in other repos.
+
+   See [`state-proof-plan.md`](state-proof-plan.md) for the original
+   plan and [`state-proof-implementation-plan.md`](state-proof-implementation-plan.md)
+   §"Three distinct tracks" for the boundary discipline.
 
 ## Caveat tiers
 
