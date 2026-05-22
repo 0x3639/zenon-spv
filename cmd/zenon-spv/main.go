@@ -5,6 +5,7 @@
 //	zenon-spv verify-headers     <bundle.json> [--window {low|medium|high}] [--genesis-config <path>] [--state <path>]
 //	zenon-spv verify-commitment  <bundle.json> [--window ...] [--genesis-config ...] [--state <path>]
 //	zenon-spv verify-segment     <bundle.json> [--window ...] [--genesis-config ...] [--state <path>]
+//	zenon-spv verify-state-value <bundle.json> [--window ...] [--genesis-config ...] [--state <path>]
 //	zenon-spv watch              [--peers <urls>|--rpc <url>] --state <path> [--genesis-config ...] [--window ...] [--interval <dur>] [--safety-margin <n>] [--batch-size <n>] [--quorum <k>]
 //
 // watch turns the verifier into a stateful service: load (or
@@ -29,9 +30,14 @@
 // CommitmentEvidence in the bundle's `commitments` array. verify-segment
 // runs verify-headers, verify-commitment, and then validates each
 // AccountSegment's blocks (per-block hash recompute, Ed25519 signature,
-// account-chain linkage, commitment lookup). Exit codes reflect the
-// worst outcome (REJECT > REFUSED > ACCEPT in severity); a header-level
-// failure short-circuits before commitments and segments are evaluated.
+// account-chain linkage, commitment lookup). verify-state-value runs
+// verify-headers and then validates each StateValueProof in the
+// bundle's `state_value_proofs` array — refused-by-design today
+// because no consensus-bound authenticated state root exists in
+// current-protocol go-zenon (see docs/state-commitment-audit.md).
+// Exit codes reflect the worst outcome (REJECT > REFUSED > ACCEPT in
+// severity); a header-level failure short-circuits before commitments,
+// segments, or state-value proofs are evaluated.
 //
 // Default genesis is the embedded mainnet trust root
 // (chain_id=1, height=1; see internal/verify/genesis.go and
