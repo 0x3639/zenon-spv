@@ -126,7 +126,45 @@ func VerifyStateValue(state HeaderState, p proof.StateValueProof, policy Policy)
 		}
 	}
 
-	// Step 5: commitment-kind dispatch. Currently REFUSED for
+	// Step 5: structural malformedness. Cheap shape checks that
+	// any proof — accepting OR refused-by-kind — must pass. Each
+	// is a property an honest producer cannot violate. Per the
+	// Commit 6 plan, these tighten the Commit 4 verifier so the
+	// kind dispatch never sees obviously-bad input.
+	//
+	//   - Empty ProofNodes: a state-value proof with zero nodes
+	//     cannot authenticate anything. Malformed.
+	//   - Empty node inside ProofNodes: a single nil/zero-length
+	//     entry is also nonsensical (no node has zero bytes in
+	//     any reasonable wire format). Malformed.
+	//   - Duplicate node bytes: the same proof node appearing
+	//     twice is either an authoring bug or a deliberate
+	//     padding attack against the byte-cap. Malformed.
+	if len(p.ProofNodes) == 0 {
+		return withEnvelope(refuse(
+			ReasonMalformedStateProof,
+			"proof_nodes is empty",
+		), true)
+	}
+	seen := make(map[string]struct{}, len(p.ProofNodes))
+	for i, node := range p.ProofNodes {
+		if len(node) == 0 {
+			return withEnvelope(refuse(
+				ReasonMalformedStateProof,
+				fmt.Sprintf("proof_nodes[%d] is empty", i),
+			), true)
+		}
+		key := string(node)
+		if _, dup := seen[key]; dup {
+			return withEnvelope(refuse(
+				ReasonMalformedStateProof,
+				fmt.Sprintf("proof_nodes[%d] duplicates an earlier entry", i),
+			), true)
+		}
+		seen[key] = struct{}{}
+	}
+
+	// Step 6: commitment-kind dispatch. Currently REFUSED for
 	// every kind. Per docs/state-commitment-audit.md, no
 	// consensus-bound authenticated state root exists in
 	// current-protocol go-zenon; no kind defined in

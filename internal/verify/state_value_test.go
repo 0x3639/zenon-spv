@@ -243,11 +243,19 @@ func TestVerifyStateValue_OversizedNodeBytesRefuses(t *testing.T) {
 func TestVerifyStateValue_ZeroCapsAreDisabled(t *testing.T) {
 	state, p := stateValueFixture(t)
 	// Both caps disabled — the verifier must NOT refuse on
-	// resource grounds. Eventually refuses on the kind dispatch.
+	// resource grounds. Each node has DISTINCT bytes so the new
+	// malformedness check (Commit 6) doesn't fire either — we
+	// want to land on the kind dispatch.
 	policy := Policy{W: 2} // all Max* zero
 	p.ProofNodes = make([][]byte, 50_000)
 	for i := range p.ProofNodes {
-		p.ProofNodes[i] = make([]byte, 8) // 400 KB total
+		node := make([]byte, 8)
+		// Encode i so every node is distinct (avoid the duplicate
+		// detector in step 5).
+		node[0] = byte(i)
+		node[1] = byte(i >> 8)
+		node[2] = byte(i >> 16)
+		p.ProofNodes[i] = node
 	}
 
 	r := VerifyStateValue(state, p, policy)
@@ -258,33 +266,31 @@ func TestVerifyStateValue_ZeroCapsAreDisabled(t *testing.T) {
 
 // TestVerifyStateValue_StepOrdering locks in the order of checks
 // by composing a proof that fails MULTIPLE conditions at once and
-// asserting the EARLIEST applicable Reason wins. Wrong-chain +
-// missing-height + future-tip should surface chain-id mismatch
-// first; without chain-id mismatch, height-out-of-window wins;
-// without that, finality; without that, oversized; without that,
-// unsupported-kind.
+// asserting the EARLIEST applicable Reason wins. Walks each step
+// down the 6-step ladder in turn.
 func TestVerifyStateValue_StepOrdering(t *testing.T) {
 	state, p := stateValueFixture(t)
 	policy := statePolicyFor(state)
 	policy.MaxStateProofNodes = 1
 
 	// Multi-failure proof: wrong chain AND missing height AND
-	// no finality AND oversized AND unknown kind.
+	// no finality AND oversized AND duplicate nodes AND unknown
+	// kind.
 	p.ChainID = 99
 	p.MomentumHeight = 0
-	p.ProofNodes = [][]byte{{1}, {2}, {3}}
+	p.ProofNodes = [][]byte{{1}, {1}, {1}} // oversized AND duplicate
 	p.CommitmentKind = ""
 
 	r := VerifyStateValue(state, p, policy)
 	if r.Outcome != OutcomeReject || r.Reason != ReasonChainIDMismatch {
-		t.Fatalf("step 1 must win when multiple fail; got %s", r)
+		t.Fatalf("step 1 (chain id) must win when multiple fail; got %s", r)
 	}
 
 	// Repair step 1; height-out-of-window should now surface.
 	p.ChainID = state.Genesis.ChainID
 	r = VerifyStateValue(state, p, policy)
 	if r.Outcome != OutcomeRefused || r.Reason != ReasonHeightOutOfWindow {
-		t.Fatalf("step 2 must win after fixing step 1; got %s", r)
+		t.Fatalf("step 2 (header lookup) must win after fixing step 1; got %s", r)
 	}
 
 	// Fix step 2 by targeting a retained header but at tip (no finality).
@@ -292,7 +298,7 @@ func TestVerifyStateValue_StepOrdering(t *testing.T) {
 	p.MomentumHeight = tip.Height
 	r = VerifyStateValue(state, p, policy)
 	if r.Outcome != OutcomeRefused || r.Reason != ReasonInsufficientFinality {
-		t.Fatalf("step 3 must win after fixing steps 1+2; got %s", r)
+		t.Fatalf("step 3 (finality) must win after fixing steps 1+2; got %s", r)
 	}
 
 	// Fix step 3 by targeting earliest retained header (tip-2 = W).
@@ -300,13 +306,22 @@ func TestVerifyStateValue_StepOrdering(t *testing.T) {
 	p.MomentumHeight = earliest.Height
 	r = VerifyStateValue(state, p, policy)
 	if r.Outcome != OutcomeRefused || r.Reason != ReasonOversizedStateProof {
-		t.Fatalf("step 4 must win after fixing steps 1+2+3; got %s", r)
+		t.Fatalf("step 4 (oversized) must win after fixing steps 1+2+3; got %s", r)
 	}
 
-	// Fix step 4 by shrinking the proof. Unknown kind now surfaces.
+	// Fix step 4 by lifting the count cap. Step 5 (malformedness)
+	// should now surface because the proof has duplicate nodes.
+	policy.MaxStateProofNodes = 10
+	r = VerifyStateValue(state, p, policy)
+	if r.Outcome != OutcomeRefused || r.Reason != ReasonMalformedStateProof {
+		t.Fatalf("step 5 (malformedness — duplicates) must win after fixing steps 1-4; got %s", r)
+	}
+
+	// Fix step 5 by shrinking + dedup-ing the proof. Step 6
+	// (unsupported kind) is the final destination.
 	p.ProofNodes = [][]byte{{1}}
 	r = VerifyStateValue(state, p, policy)
 	if r.Outcome != OutcomeRefused || r.Reason != ReasonUnsupportedStateCommitment {
-		t.Fatalf("step 5 must win after fixing steps 1-4; got %s", r)
+		t.Fatalf("step 6 (kind dispatch) must win after fixing steps 1-5; got %s", r)
 	}
 }
