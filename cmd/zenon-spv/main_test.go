@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bytes"
+	"strings"
 	"testing"
 
 	"github.com/0x3639/zenon-spv/internal/chain"
@@ -128,5 +130,77 @@ func TestPreflightBundleBounds_PerBundleSegmentCount(t *testing.T) {
 	r := preflightBundleBounds(bundle, policy)
 	if r.Outcome != verify.OutcomeRefused || r.Reason != verify.ReasonOversizedSegment {
 		t.Fatalf("expected REFUSED/ReasonOversizedSegment, got %s", r)
+	}
+}
+
+// TestSegmentBlockLabel_RealBlockUsesHeight: when bi indexes a real
+// block in seg.Blocks, the label includes its height.
+func TestSegmentBlockLabel_RealBlockUsesHeight(t *testing.T) {
+	seg := proof.AccountSegment{
+		Address: chain.Address{0xAA},
+		Blocks:  []chain.AccountBlock{{Height: 42}},
+	}
+	got := segmentBlockLabel(0, seg)
+	if want := "  block[0] height=42"; got != want {
+		t.Errorf("segmentBlockLabel(0, real): got %q, want %q", got, want)
+	}
+}
+
+// TestSegmentBlockLabel_SyntheticUsesGenericLabel is the Codex
+// follow-up #1 regression: VerifySegment returns a single synthetic
+// Result for empty or oversized segments. seg.Blocks may then be
+// empty (or smaller than SegmentResult.Blocks length), so a naive
+// seg.Blocks[bi] panics. The helper must fall back to a generic
+// "segment-result[bi]" label without panicking.
+func TestSegmentBlockLabel_SyntheticUsesGenericLabel(t *testing.T) {
+	emptySeg := proof.AccountSegment{
+		Address: chain.Address{0xBB},
+		Blocks:  nil,
+	}
+	defer func() {
+		if rec := recover(); rec != nil {
+			t.Fatalf("segmentBlockLabel(0, empty) panicked: %v", rec)
+		}
+	}()
+	got := segmentBlockLabel(0, emptySeg)
+	if want := "  segment-result[0]"; got != want {
+		t.Errorf("segmentBlockLabel(0, empty): got %q, want %q", got, want)
+	}
+}
+
+// TestPrintResultTo_CommitmentEnvelopeIsSurfaced is the Codex
+// follow-up #3 regression: verify-commitment used to print raw
+// Result.String(), so users never saw proven/not_proven/
+// trust_assumptions for commitments. After wiring printResult into
+// runVerifyCommitment (and refactoring printResult to take an
+// io.Writer), a commitment Result with populated guarantee fields
+// must surface all three structured sections in the output.
+func TestPrintResultTo_CommitmentEnvelopeIsSurfaced(t *testing.T) {
+	r := verify.Result{
+		Outcome:          verify.OutcomeAccept,
+		Reason:           verify.ReasonOK,
+		FailedAt:         -1,
+		Proven:           []verify.Guarantee{verify.GuaranteeContentInclusion},
+		NotProven:        []verify.Guarantee{verify.GuaranteeCanonicality, verify.GuaranteeStateTransition},
+		TrustAssumptions: []verify.TrustAssumption{verify.TrustRetainedWindowDepth},
+	}
+	var buf bytes.Buffer
+	printResultTo(&buf, "commitment[0] height=123 addr=ff", r)
+
+	out := buf.String()
+	for _, want := range []string{
+		"commitment[0] height=123 addr=ff:",
+		"ACCEPT", "ReasonOK",
+		"proven:",
+		"- CONTENT_INCLUSION",
+		"not_proven:",
+		"- CANONICALITY",
+		"- STATE_TRANSITION",
+		"trust_assumptions:",
+		"- TRUST_RETAINED_WINDOW_DEPTH",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("commitment output missing %q; full output:\n%s", want, out)
+		}
 	}
 }

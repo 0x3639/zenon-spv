@@ -156,3 +156,82 @@ func contains(xs []Guarantee, want Guarantee) bool {
 	}
 	return false
 }
+
+// TestGuarantees_ConcurrentSharedResultWithSpareCapacity is the
+// Codex follow-up #2 regression. Closing the dst[:0] race in
+// removeGuarantees was only half the fix — appendUniqueGuarantees
+// and appendUniqueTrust also wrote into dst's backing array via
+// `append`, which is racy whenever dst has spare capacity (the
+// other typical shape: a Result whose slices were built with
+// over-estimated cap then later shared across goroutines).
+//
+// This test forces the spare-capacity shape by allocating slices
+// with cap larger than len, then has many goroutines call WithProven
+// / WithTrust on the shared base. Pre-fix this would race on the
+// backing arrays at the append site; post-fix the helpers allocate
+// fresh slices.
+func TestGuarantees_ConcurrentSharedResultWithSpareCapacity(t *testing.T) {
+	provenWithCap := make([]Guarantee, 0, 12)
+	provenWithCap = append(provenWithCap, GuaranteeHeaderChainIntegrity)
+
+	notProvenWithCap := make([]Guarantee, 0, 12)
+	notProvenWithCap = append(notProvenWithCap,
+		GuaranteeContentInclusion,
+		GuaranteeStateTransition,
+	)
+
+	trustWithCap := make([]TrustAssumption, 0, 12)
+	trustWithCap = append(trustWithCap, TrustCheckpointAnchor)
+
+	base := Result{
+		Outcome:          OutcomeAccept,
+		Reason:           ReasonOK,
+		FailedAt:         -1,
+		Proven:           provenWithCap,
+		NotProven:        notProvenWithCap,
+		TrustAssumptions: trustWithCap,
+	}
+
+	const goroutines = 64
+	const iterations = 2000
+
+	var (
+		wg       sync.WaitGroup
+		violated atomic.Int64
+	)
+	for g := 0; g < goroutines; g++ {
+		wg.Add(1)
+		guarantee := []Guarantee{
+			GuaranteeSignatureAuthenticity,
+			GuaranteeProducerAuthorization,
+			GuaranteeCanonicality,
+		}[g%3]
+		trust := []TrustAssumption{
+			TrustRPCQuorum,
+			TrustExternalProducerSchedule,
+			TrustRetainedWindowDepth,
+		}[g%3]
+		go func(g Guarantee, t TrustAssumption) {
+			defer wg.Done()
+			for i := 0; i < iterations; i++ {
+				r := base.WithProven(g).WithTrust(t)
+				for _, p := range r.Proven {
+					if contains(r.NotProven, p) {
+						violated.Add(1)
+						return
+					}
+				}
+			}
+		}(guarantee, trust)
+	}
+	wg.Wait()
+	if v := violated.Load(); v != 0 {
+		t.Fatalf("%d goroutines produced contradicting Results on spare-cap base", v)
+	}
+	// Confirm base wasn't mutated through any backing-array sharing:
+	// its initial sizes must still hold.
+	if len(base.Proven) != 1 || len(base.NotProven) != 2 || len(base.TrustAssumptions) != 1 {
+		t.Fatalf("base mutated through backing array: Proven=%v NotProven=%v Trust=%v",
+			base.Proven, base.NotProven, base.TrustAssumptions)
+	}
+}

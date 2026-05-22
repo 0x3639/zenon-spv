@@ -161,7 +161,7 @@ func runVerifyCommitment(args []string) int {
 	worst := verify.OutcomeAccept
 	for i, r := range results {
 		c := ctx.bundle.Commitments[i]
-		fmt.Printf("commitment[%d] height=%d addr=%x: %s\n", i, c.Height, c.Target.Address, r)
+		printResult(fmt.Sprintf("commitment[%d] height=%d addr=%x", i, c.Height, c.Target.Address), r)
 		switch r.Outcome {
 		case verify.OutcomeRefused:
 			if worst != verify.OutcomeReject {
@@ -219,7 +219,7 @@ func runVerifySegment(args []string) int {
 		segRes := verify.VerifySegment(newState, seg, ctx.bundle.Commitments, ctx.policy())
 		fmt.Printf("segment[%d] address=%x blocks=%d:\n", si, seg.Address, len(seg.Blocks))
 		for bi, r := range segRes.Blocks {
-			printResult(fmt.Sprintf("  block[%d] height=%d", bi, seg.Blocks[bi].Height), r)
+			printResult(segmentBlockLabel(bi, seg), r)
 		}
 		switch segRes.Worst() {
 		case verify.OutcomeReject:
@@ -575,37 +575,61 @@ func splitWatchPeers(s string) []string {
 // (tier 1 when no authorizer; tier 2 under operator-attested
 // schedule). See internal/verify/caveats.go for tier definitions.
 
-func printResult(label string, r verify.Result) {
-	if label != "" {
-		fmt.Printf("%s: %s\n", label, r)
-	} else {
-		fmt.Println(r)
+// segmentBlockLabel formats the printable label for the bi-th
+// entry in a SegmentResult's Blocks slice. Normally this maps
+// 1:1 to seg.Blocks[bi]. But VerifySegment also returns a single
+// synthetic Result for empty or oversized segments (see
+// internal/verify/segment.go), in which case segRes.Blocks has
+// more entries than seg.Blocks and a naive index lookup panics.
+// Return a generic "segment-result[bi]" label for those cases.
+func segmentBlockLabel(bi int, seg proof.AccountSegment) string {
+	if bi < len(seg.Blocks) {
+		return fmt.Sprintf("  block[%d] height=%d", bi, seg.Blocks[bi].Height)
 	}
+	return fmt.Sprintf("  segment-result[%d]", bi)
+}
 
-	printGuarantees("proven", r.Proven)
-	printGuarantees("not_proven", r.NotProven)
-	printTrustAssumptions("trust_assumptions", r.TrustAssumptions)
+func printResult(label string, r verify.Result) { printResultTo(os.Stdout, label, r) }
+
+// printResultTo is the io.Writer-parameterized form of printResult,
+// used by tests that need to capture the structured output into a
+// bytes.Buffer. Production callers should use printResult.
+func printResultTo(w io.Writer, label string, r verify.Result) {
+	if label != "" {
+		fmt.Fprintf(w, "%s: %s\n", label, r)
+	} else {
+		fmt.Fprintln(w, r)
+	}
+	printGuaranteesTo(w, "proven", r.Proven)
+	printGuaranteesTo(w, "not_proven", r.NotProven)
+	printTrustAssumptionsTo(w, "trust_assumptions", r.TrustAssumptions)
 }
 
 func printGuarantees(label string, xs []verify.Guarantee) {
+	printGuaranteesTo(os.Stdout, label, xs)
+}
+
+func printGuaranteesTo(w io.Writer, label string, xs []verify.Guarantee) {
 	if len(xs) == 0 {
 		return
 	}
-
-	fmt.Printf("%s:\n", label)
+	fmt.Fprintf(w, "%s:\n", label)
 	for _, x := range xs {
-		fmt.Printf("  - %s\n", x)
+		fmt.Fprintf(w, "  - %s\n", x)
 	}
 }
 
 func printTrustAssumptions(label string, xs []verify.TrustAssumption) {
+	printTrustAssumptionsTo(os.Stdout, label, xs)
+}
+
+func printTrustAssumptionsTo(w io.Writer, label string, xs []verify.TrustAssumption) {
 	if len(xs) == 0 {
 		return
 	}
-
-	fmt.Printf("%s:\n", label)
+	fmt.Fprintf(w, "%s:\n", label)
 	for _, x := range xs {
-		fmt.Printf("  - %s\n", x)
+		fmt.Fprintf(w, "  - %s\n", x)
 	}
 }
 

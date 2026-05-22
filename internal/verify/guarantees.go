@@ -51,18 +51,28 @@ func (r Result) WithTrust(ts ...TrustAssumption) Result {
 }
 
 func appendUniqueGuarantees(dst []Guarantee, src ...Guarantee) []Guarantee {
+	if len(src) == 0 {
+		return dst
+	}
 	seen := make(map[Guarantee]struct{}, len(dst)+len(src))
 	for _, g := range dst {
 		seen[g] = struct{}{}
 	}
+	// Allocate a fresh slice rather than appending into dst. `append`
+	// writes into dst's backing array if dst has spare capacity, which
+	// is shared with the caller's Result via slice-header copy and
+	// races a concurrent reader. See removeGuarantees note and
+	// TestGuarantees_ConcurrentSharedResultWithSpareCapacity.
+	out := make([]Guarantee, len(dst), len(dst)+len(src))
+	copy(out, dst)
 	for _, g := range src {
 		if _, ok := seen[g]; ok {
 			continue
 		}
-		dst = append(dst, g)
+		out = append(out, g)
 		seen[g] = struct{}{}
 	}
-	return dst
+	return out
 }
 
 func removeGuarantees(dst []Guarantee, remove ...Guarantee) []Guarantee {
@@ -99,16 +109,22 @@ func containsGuarantee(xs []Guarantee, want Guarantee) bool {
 }
 
 func appendUniqueTrust(dst []TrustAssumption, src ...TrustAssumption) []TrustAssumption {
+	if len(src) == 0 {
+		return dst
+	}
 	seen := make(map[TrustAssumption]struct{}, len(dst)+len(src))
 	for _, t := range dst {
 		seen[t] = struct{}{}
 	}
+	// Same copy-on-write rationale as appendUniqueGuarantees.
+	out := make([]TrustAssumption, len(dst), len(dst)+len(src))
+	copy(out, dst)
 	for _, t := range src {
 		if _, ok := seen[t]; ok {
 			continue
 		}
-		dst = append(dst, t)
+		out = append(out, t)
 		seen[t] = struct{}{}
 	}
-	return dst
+	return out
 }
