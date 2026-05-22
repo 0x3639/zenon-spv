@@ -681,41 +681,37 @@ func printResult(label string, r verify.Result) { printResultTo(os.Stdout, label
 // used by tests that need to capture the structured output into a
 // bytes.Buffer. Production callers should use printResult.
 func printResultTo(w io.Writer, label string, r verify.Result) {
+	// Writes to w are best-effort: w is typically os.Stdout (where
+	// the error is unrecoverable) or a bytes.Buffer in tests
+	// (where errors don't happen). Explicit discard satisfies
+	// errcheck and documents the intent.
 	if label != "" {
-		fmt.Fprintf(w, "%s: %s\n", label, r)
+		_, _ = fmt.Fprintf(w, "%s: %s\n", label, r)
 	} else {
-		fmt.Fprintln(w, r)
+		_, _ = fmt.Fprintln(w, r)
 	}
 	printGuaranteesTo(w, "proven", r.Proven)
 	printGuaranteesTo(w, "not_proven", r.NotProven)
 	printTrustAssumptionsTo(w, "trust_assumptions", r.TrustAssumptions)
 }
 
-func printGuarantees(label string, xs []verify.Guarantee) {
-	printGuaranteesTo(os.Stdout, label, xs)
-}
-
 func printGuaranteesTo(w io.Writer, label string, xs []verify.Guarantee) {
 	if len(xs) == 0 {
 		return
 	}
-	fmt.Fprintf(w, "%s:\n", label)
+	_, _ = fmt.Fprintf(w, "%s:\n", label)
 	for _, x := range xs {
-		fmt.Fprintf(w, "  - %s\n", x)
+		_, _ = fmt.Fprintf(w, "  - %s\n", x)
 	}
-}
-
-func printTrustAssumptions(label string, xs []verify.TrustAssumption) {
-	printTrustAssumptionsTo(os.Stdout, label, xs)
 }
 
 func printTrustAssumptionsTo(w io.Writer, label string, xs []verify.TrustAssumption) {
 	if len(xs) == 0 {
 		return
 	}
-	fmt.Fprintf(w, "%s:\n", label)
+	_, _ = fmt.Fprintf(w, "%s:\n", label)
 	for _, x := range xs {
-		fmt.Fprintf(w, "  - %s\n", x)
+		_, _ = fmt.Fprintf(w, "  - %s\n", x)
 	}
 }
 
@@ -724,9 +720,9 @@ func printSourceTrust(w io.Writer, xs []verify.TrustAssumption) {
 		return
 	}
 
-	fmt.Fprintln(w, "source_trust:")
+	_, _ = fmt.Fprintln(w, "source_trust:")
 	for _, x := range xs {
-		fmt.Fprintf(w, "  - %s\n", x)
+		_, _ = fmt.Fprintf(w, "  - %s\n", x)
 	}
 }
 
@@ -737,7 +733,7 @@ func printAcceptCaveat(w io.Writer, opts verify.VerifyOptions) {
 		// rather than emit a noisy empty caveat.
 		return
 	}
-	fmt.Fprintln(w, caveat)
+	_, _ = fmt.Fprintln(w, caveat)
 }
 
 // outcomeExitCode maps an Outcome to the documented exit-code matrix:

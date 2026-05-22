@@ -3,7 +3,6 @@ package fetch
 import (
 	"context"
 	"encoding/base64"
-	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -255,10 +254,4 @@ func base64ToBytesOptional(s string) ([]byte, error) {
 		return nil, nil
 	}
 	return base64.StdEncoding.DecodeString(s)
-}
-
-func appendUint64BE(dst []byte, v uint64) []byte {
-	var b [8]byte
-	binary.BigEndian.PutUint64(b[:], v)
-	return append(dst, b[:]...)
 }
