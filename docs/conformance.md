@@ -120,7 +120,15 @@ These are *known* and *documented*, not bugs.
 
    - **`GuaranteeStateValueInclusion`** (= `"STATE_VALUE_INCLUSION"`)
      — never appears in `Proven` on any shipped build. Locked in
-     by `TestGuaranteeStateValueInclusion_NeverProvenInCurrentBuilders`.
+     by `assertLacksGuarantee(..., GuaranteeStateValueInclusion)`
+     in every real-ACCEPT-path guarantee test:
+     `TestVerifyHeadersAcceptReportsBoundedGuarantees`,
+     `TestVerifyHeadersWithOperatorScheduleReportsExternalScheduleTrust`,
+     `TestVerifyCommitmentAcceptReportsBoundedGuarantees`,
+     `TestVerifySegmentAcceptReportsBoundedGuarantees`, and
+     `TestAuthorizeRetainedWindow_RequiredScheduleReportsProducerAuthGuarantee`.
+     Any future verifier change that accidentally adds this
+     guarantee to Proven will trip whichever path it touches.
    - **State-proof reason codes** (state-proof PR / Phase 1):
      `ReasonUnsupportedStateCommitment` (the structural REFUSED
      today), plus `ReasonInvalidStateProof`,

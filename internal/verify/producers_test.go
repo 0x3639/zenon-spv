@@ -559,4 +559,8 @@ func TestAuthorizeRetainedWindow_RequiredScheduleReportsProducerAuthGuarantee(t 
 	}
 	assertHasGuarantee(t, r.Proven, GuaranteeProducerAuthorization)
 	assertHasTrustAssumption(t, r.TrustAssumptions, TrustExternalProducerSchedule)
+	// state-proof PR / Phase 1 refusal-contract lock against the
+	// AuthorizeRetainedWindow ACCEPT path. Per Codex review of
+	// Commit 2.
+	assertLacksGuarantee(t, r.Proven, GuaranteeStateValueInclusion)
 }

@@ -25,6 +25,11 @@ func TestVerifySegmentAcceptReportsBoundedGuarantees(t *testing.T) {
 		assertHasGuarantee(t, r.NotProven, GuaranteeHeaderChainIntegrity)
 		assertHasGuarantee(t, r.NotProven, GuaranteeProducerAuthorization)
 		assertHasGuarantee(t, r.NotProven, GuaranteeCanonicality)
+
+		// state-proof PR / Phase 1 refusal-contract lock against
+		// the real VerifySegment ACCEPT path. Per Codex review of
+		// Commit 2.
+		assertLacksGuarantee(t, r.Proven, GuaranteeStateValueInclusion)
 		assertHasGuarantee(t, r.NotProven, GuaranteeStateTransition)
 
 		assertHasTrustAssumption(t, r.TrustAssumptions, TrustRetainedWindowDepth)
