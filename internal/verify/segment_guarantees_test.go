@@ -19,6 +19,9 @@ func TestVerifySegmentAcceptReportsBoundedGuarantees(t *testing.T) {
 		assertHasGuarantee(t, r.Proven, GuaranteeContentInclusion)
 		assertHasGuarantee(t, r.Proven, GuaranteeSignatureAuthenticity)
 
+		assertNoContradictingGuarantees(t, r)
+		assertLacksGuarantee(t, r.NotProven, GuaranteeSignatureAuthenticity)
+
 		assertHasGuarantee(t, r.NotProven, GuaranteeHeaderChainIntegrity)
 		assertHasGuarantee(t, r.NotProven, GuaranteeProducerAuthorization)
 		assertHasGuarantee(t, r.NotProven, GuaranteeCanonicality)

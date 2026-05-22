@@ -29,12 +29,18 @@ const (
 // It preserves existing Result fields for backward compatibility.
 func (r Result) WithProven(gs ...Guarantee) Result {
 	r.Proven = appendUniqueGuarantees(r.Proven, gs...)
+	r.NotProven = removeGuarantees(r.NotProven, gs...)
 	return r
 }
 
 // WithNotProven returns a copy of r with guarantees added to NotProven.
 func (r Result) WithNotProven(gs ...Guarantee) Result {
-	r.NotProven = appendUniqueGuarantees(r.NotProven, gs...)
+	for _, g := range gs {
+		if containsGuarantee(r.Proven, g) {
+			continue
+		}
+		r.NotProven = appendUniqueGuarantees(r.NotProven, g)
+	}
 	return r
 }
 
@@ -57,6 +63,39 @@ func appendUniqueGuarantees(dst []Guarantee, src ...Guarantee) []Guarantee {
 		seen[g] = struct{}{}
 	}
 	return dst
+}
+
+func removeGuarantees(dst []Guarantee, remove ...Guarantee) []Guarantee {
+	if len(dst) == 0 || len(remove) == 0 {
+		return dst
+	}
+	removeSet := make(map[Guarantee]struct{}, len(remove))
+	for _, g := range remove {
+		removeSet[g] = struct{}{}
+	}
+	// Allocate a fresh slice. The prior dst[:0] pattern mutated the
+	// input's backing array, which is shared via slice-header copy
+	// with the caller's Result. Two goroutines that share a Result
+	// and each call WithProven would race on this backing array
+	// (proven empirically by TestGuarantees_ConcurrentWithProvenIs
+	// RaceFree under -race; see docs/stress-test-from-reference.md).
+	out := make([]Guarantee, 0, len(dst))
+	for _, g := range dst {
+		if _, ok := removeSet[g]; ok {
+			continue
+		}
+		out = append(out, g)
+	}
+	return out
+}
+
+func containsGuarantee(xs []Guarantee, want Guarantee) bool {
+	for _, x := range xs {
+		if x == want {
+			return true
+		}
+	}
+	return false
 }
 
 func appendUniqueTrust(dst []TrustAssumption, src ...TrustAssumption) []TrustAssumption {

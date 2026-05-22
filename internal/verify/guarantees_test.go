@@ -46,6 +46,28 @@ func TestResultGuaranteesDeduplicate(t *testing.T) {
 	}
 }
 
+func TestResultGuaranteesCannotContradict(t *testing.T) {
+	t.Run("proven after not-proven wins", func(t *testing.T) {
+		r := accept().
+			WithNotProven(GuaranteeSignatureAuthenticity, GuaranteeCanonicality).
+			WithProven(GuaranteeSignatureAuthenticity)
+
+		assertHasGuarantee(t, r.Proven, GuaranteeSignatureAuthenticity)
+		assertLacksGuarantee(t, r.NotProven, GuaranteeSignatureAuthenticity)
+		assertHasGuarantee(t, r.NotProven, GuaranteeCanonicality)
+	})
+
+	t.Run("not-proven after proven does not re-add", func(t *testing.T) {
+		r := accept().
+			WithProven(GuaranteeSignatureAuthenticity).
+			WithNotProven(GuaranteeSignatureAuthenticity, GuaranteeCanonicality)
+
+		assertHasGuarantee(t, r.Proven, GuaranteeSignatureAuthenticity)
+		assertLacksGuarantee(t, r.NotProven, GuaranteeSignatureAuthenticity)
+		assertHasGuarantee(t, r.NotProven, GuaranteeCanonicality)
+	})
+}
+
 func hasGuarantee(xs []Guarantee, want Guarantee) bool {
 	for _, x := range xs {
 		if x == want {

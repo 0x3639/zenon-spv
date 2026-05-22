@@ -73,6 +73,24 @@ func assertHasGuarantee(t *testing.T, xs []Guarantee, want Guarantee) {
 	t.Fatalf("missing guarantee %s in %#v", want, xs)
 }
 
+func assertLacksGuarantee(t *testing.T, xs []Guarantee, want Guarantee) {
+	t.Helper()
+	for _, x := range xs {
+		if x == want {
+			t.Fatalf("unexpected guarantee %s in %#v", want, xs)
+		}
+	}
+}
+
+func assertNoContradictingGuarantees(t *testing.T, r Result) {
+	t.Helper()
+	for _, g := range r.Proven {
+		if hasGuarantee(r.NotProven, g) {
+			t.Fatalf("guarantee %s appears in both proven and not_proven: %#v / %#v", g, r.Proven, r.NotProven)
+		}
+	}
+}
+
 func assertHasTrustAssumption(t *testing.T, xs []TrustAssumption, want TrustAssumption) {
 	t.Helper()
 	for _, x := range xs {
