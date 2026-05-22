@@ -12,7 +12,7 @@ The Explore agent's preliminary read of go-zenon (in the vault at `~/Github/zeno
 
 - **`Momentum.ChangesHash`** is computed via `db.PatchHash(patch.Dump())` (`/chain/nom/momentum.go:46,67` + `/vm/supervisor.go:283`) — a flat SHA3 hash of the LevelDB batch serialization, **not** an authenticated state root.
 - **No Merkle / IAVL / trie / authenticated state structure** exists upstream. `/common/db/patch.go:124-126` confirms `PatchHash` directly hashes the raw `patch.Dump()`.
-- **Balances** are stored as flat key-value: `[0x03][tokenStandard(10b)][value]` (`/chain/account/balance.go` + `/chain/account/keys.go`), big-endian integers. No proof path.
+- **Balances** live at an **account-local key** `balancePrefix(0x03) || tokenStandard(10b)` with values encoded as big-endian integers (`/chain/account/balance.go` + `/chain/account/keys.go`). Note this is the key INSIDE the account-store namespace; the **full effective Momentum DB key** wraps that with the account-store prefix and the account `Address` before the account-local balance prefix (i.e., something like `accountStorePrefix || address(20b) || balancePrefix || tokenStandard`). Phase 0's audit must spell out both layers; future proof key encoding depends on the global form, not the account-local form. There is no proof path either way.
 - **Momentum content** commits account frontiers only (Address + Height + BlockHash per `AccountHeader`); no balance or state data.
 
 **Implication.** The Phase 0 audit is going to conclude "no consensus-bound authenticated state root exists in go-zenon today." Per the doc's own gate text — "If there is no consensus-bound authenticated state root, the verifier must not accept a `StateValueProof` that claims to prove full state membership" — Phase 4 (read-only balance proofs) is **structurally out of reach** until go-zenon ships protocol changes.
@@ -46,7 +46,9 @@ Answers the 5 audit questions with exact go-zenon source references:
 1. **What does `ChangesHash` commit to?** `db.PatchHash(patch.Dump())` — flat SHA3 over the LevelDB batch dump. Reference: `chain/nom/momentum.go:46,67`, `vm/supervisor.go:283`, `common/db/patch.go:124-126`. Conclusion: patch commitment, not state root.
 2. **Authenticated state root?** None. No Merkle / IAVL / trie surfaces.
 3. **Does a Momentum commit account frontiers or actual balance/state?** Frontiers only via `MomentumContent.Hash` over sorted `AccountHeader{Address, Height, BlockHash}` (reference: `chain/nom/momentum_content.go:12,41-48`).
-4. **Balance data structure and key layout.** `[0x03][tokenStandard(10b)][value]` big-endian. Reference: `chain/account/balance.go:12-14,19-35`, `chain/account/keys.go:4`. Iterator on prefix works at the node level but provides no membership proof.
+4. **Balance data structure and key layout.** Two layers to spell out distinctly (the values are big-endian integers; the key is what's contested):
+   - **Account-local key** (inside an account's storage namespace): `balancePrefix(0x03) || tokenStandard(10b)`. Reference: `chain/account/balance.go:12-14,19-35`, `chain/account/keys.go:4`.
+   - **Global / effective Momentum DB key** (what an SPV proof actually needs to identify): the account-store prefix and the account `Address` get prepended before the account-local key, so the full key path is approximately `accountStorePrefix || address(20b) || balancePrefix || tokenStandard`. The audit must walk the wrapping code in the Momentum DB layer and document the exact prefix bytes, since any future proof's key encoding has to match the global form, not the account-local form. Iterator on the global prefix works at the node level but provides no membership proof.
 5. **Compact membership proof feasibility today?** No. Would require go-zenon to commit a Merkleized root alongside `MomentumContent.Hash` and `ChangesHash`. Flat-list proofs are bandwidth-O(m) at best — same as current `FlatContentEvidence`.
 
 Conclusion section: **The SPV cannot accept a state-value proof against current-protocol go-zenon.** A `StateValueProof` wire type is still worth adding (forward compatibility) but every `VerifyStateValue` call must return `REFUSED/ReasonUnsupportedStateCommitment` until protocol additions land.
@@ -89,26 +91,45 @@ Files touched:
   const (
       // Reserved values; all currently unsupported. The audit
       // identifies none as available against current go-zenon.
-      StateCommitmentPatchHash       StateCommitmentKind = "PATCH_HASH"
-      StateCommitmentMerkleContent   StateCommitmentKind = "MERKLE_CONTENT"   // hypothetical future
-      StateCommitmentIAVLState       StateCommitmentKind = "IAVL_STATE"       // hypothetical future
+      //
+      // PATCH_HASH is INTENTIONALLY EXCLUDED. Per Codex review of
+      // this plan: ChangesHash can at most support a patch/delta
+      // claim ("this write happened in the batch applied at
+      // momentum H"), not historical state membership ("the value
+      // of key K at momentum H is V"). The two have different
+      // semantics and would have different proof shapes. If/when
+      // a patch claim becomes useful, it lives as a distinct
+      // `StateDeltaProof` wire type in a future PR — NOT as a
+      // CommitmentKind on StateValueProof. Keeping them separate
+      // at the type level avoids the semantic foot-gun where a
+      // "state value proof" with kind=PATCH_HASH would be lying
+      // about what it actually attests.
+      StateCommitmentMerkleContent StateCommitmentKind = "MERKLE_CONTENT" // hypothetical future
+      StateCommitmentIAVLState     StateCommitmentKind = "IAVL_STATE"     // hypothetical future
   )
 
+  // JSON tags match the existing HeaderBundle convention
+  // (snake_case for cross-language consumers). Per Codex review:
+  // existing structs like CommitmentEvidence, FlatContentEvidence
+  // all use explicit tags; this one must too.
   type StateValueProof struct {
-      ChainID        uint64
-      MomentumHeight uint64
-      Address        chain.Address
-      KeyKind        StateKeyKind
-      Key            []byte
-      ClaimedValue   []byte
-      CommitmentKind StateCommitmentKind
-      StateRoot      chain.Hash
-      ProofNodes     [][]byte
+      ChainID        uint64              `json:"chain_id"`
+      MomentumHeight uint64              `json:"momentum_height"`
+      Address        chain.Address       `json:"address"`
+      KeyKind        StateKeyKind        `json:"key_kind"`
+      Key            []byte              `json:"key"`
+      ClaimedValue   []byte              `json:"claimed_value"`
+      CommitmentKind StateCommitmentKind `json:"commitment_kind"`
+      StateRoot      chain.Hash          `json:"state_root"`
+      ProofNodes     [][]byte            `json:"proof_nodes"`
   }
   ```
 - `internal/proof/types.go` — extend `HeaderBundle` with `StateValueProofs []StateValueProof` (`json:"state_value_proofs,omitempty"`). Optional field, doesn't break existing bundles.
-- `internal/proof/serialize.go` — extend the bounded loader to enforce a new `Policy.MaxStateValueProofs` cap if non-zero (resource-bound guardrail, matching the pattern from Branch 2b).
-- `internal/verify/policy.go` — add `MaxStateValueProofs int` and `MaxStateProofBytes int` fields with zero-disables semantics (matches existing Max* convention).
+- `internal/verify/policy.go` — add three Max* fields with zero-disables semantics (matches existing Max* convention):
+  - `MaxStateValueProofs int` — aggregate count of `StateValueProof` entries in a bundle.
+  - `MaxStateProofNodes int` — per-proof cap on `len(p.ProofNodes)`.
+  - `MaxStateProofBytes int` — per-proof cap on `sum(len(node))` across all nodes (closes the "one huge node bypass" hole).
+- `cmd/zenon-spv/main.go` — extend `preflightBundleBounds` to enforce `MaxStateValueProofs` (aggregate) before any verifier touches the bundle, same shape as the existing aggregate caps from Branch 2b. **Do NOT add this enforcement to `internal/proof/serialize.go`** — `proof` cannot depend on `verify.Policy` without creating a package cycle (per Codex review: `proof` is already imported by `verify`). `LoadHeaderBundleBounded` stays byte-only.
 - `internal/proof/types_test.go` — JSON round-trip for `StateValueProof`; `HeaderBundle` round-trip with and without the new field.
 
 Verification: `go test -race ./...` green; existing bundle fixtures unchanged (since the new field is `omitempty`).
@@ -135,7 +156,9 @@ Files touched:
   1. `ChainID == state.Genesis.ChainID`; else REJECT / `ReasonChainIDMismatch`.
   2. Find verified header at `p.MomentumHeight` via `state.HeaderAtHeight(p.MomentumHeight)`; else REFUSED / `ReasonHeightOutOfWindow`.
   3. Finality: `tip - p.MomentumHeight >= policy.W`; else REFUSED / `ReasonInsufficientFinality`.
-  4. Resource bounds: `len(p.ProofNodes) <= policy.MaxStateProofBytes` (estimated as sum of node lengths); else REFUSED / `ReasonOversizedStateProof`.
+  4. Resource bounds — TWO checks (per Codex review: `len(ProofNodes)` is node count, not byte size; one huge node would bypass a count-only cap):
+     - `policy.MaxStateProofNodes > 0 && len(p.ProofNodes) > policy.MaxStateProofNodes` → REFUSED / `ReasonOversizedStateProof`.
+     - `policy.MaxStateProofBytes > 0 && sum(len(node) for node in p.ProofNodes) > policy.MaxStateProofBytes` → REFUSED / `ReasonOversizedStateProof`.
   5. Header-binds-commitment placeholder: today, any `CommitmentKind` requires reconstructing a root that go-zenon doesn't authenticate. Return REFUSED / `ReasonUnsupportedStateCommitment` with a message naming the kind.
   6. Steps 6–9 (reconstruct root, decode key, decode value, ACCEPT) are unreachable until a supported `CommitmentKind` lands.
 
@@ -166,7 +189,7 @@ New file: `internal/verify/state_value_attacks_test.go`. Tests (one per case):
 1. `TestAttack_StateValueProof_WrongBalanceWithValidLookingProof` → REFUSED / `ReasonUnsupportedStateCommitment` (the value mismatch is unreachable until we have an authenticated root, but the proof refuses at step 5).
 2. `TestAttack_StateValueProof_ValidBalanceUnderWrongRoot` → same.
 3. `TestAttack_StateValueProof_StaleHeight` → REFUSED / `ReasonHeightOutOfWindow` (early check fires).
-4. `TestAttack_StateValueProof_ForkedHeaderChain` → REJECT / `ReasonGenesisMismatch` if forked from genesis, else REFUSED / `ReasonHeightOutOfWindow` if header not in retained window.
+4. **Forked-header-chain rejection lives upstream, NOT in the state-value unit test.** Per Codex review: `VerifyStateValue(state, proof, policy)` receives an already-built `HeaderState`. If the header chain was forked from the wrong genesis, `VerifyHeadersWithOptions` rejects with `ReasonGenesisMismatch` BEFORE `VerifyStateValue` ever sees a request. The state-value unit tests stay focused on retained-window lookup and structural refusal; a CLI integration test (in `cmd/zenon-spv/main_test.go` from Commit 7) covers the bundle-level forked-chain case end-to-end.
 5. `TestAttack_StateValueProof_DifferentAddress` → REFUSED / `ReasonUnsupportedStateCommitment` (no reconstruction yet).
 6. `TestAttack_StateValueProof_DifferentToken` → same.
 7. `TestAttack_StateValueProof_MissingProofNodes` → REFUSED / `ReasonMalformedStateProof` (we can implement this minimal check: empty `ProofNodes` is structurally malformed).
@@ -214,8 +237,8 @@ Verification: `go test -race ./...` green; CLI smoke shows the new subcommand re
 | `internal/verify/outcome.go` | 2 |
 | `internal/proof/types.go` | 3 |
 | `internal/proof/types_test.go` | 3 |
-| `internal/proof/serialize.go` | 3 |
 | `internal/verify/policy.go` | 3 |
+| `cmd/zenon-spv/main.go` (preflight extension for MaxStateValueProofs) | 3 |
 | `internal/verify/state_value.go` (new) | 4, 6 |
 | `internal/verify/state_value_test.go` (new) | 4 |
 | `docs/sentry-sentinel-role.md` (new) | 5 |
@@ -264,6 +287,22 @@ Phase 4 (accepting balance proofs) is gated on a go-zenon protocol change per th
 EOF
 )"
 ```
+
+## Codex review of this plan — findings folded in
+
+Codex reviewed the first draft of this plan and flagged five issues, all real. Folded into the plan above:
+
+1. **P1 — Package cycle.** Original Commit 3 put count-cap enforcement in `internal/proof/serialize.go`, but `proof` is already imported by `verify`, so referencing `verify.Policy` from inside `proof` would create an import cycle. **Fix:** `LoadHeaderBundleBounded` stays byte-only; the aggregate `MaxStateValueProofs` cap moves to `cmd/zenon-spv/main.go`'s `preflightBundleBounds`, matching the Branch-2b pattern.
+
+2. **P1 — `len(ProofNodes)` is node count, not byte size.** A count-only cap let a single huge node bypass the intended byte limit. **Fix:** introduce both `MaxStateProofNodes` AND `MaxStateProofBytes`; the verifier checks both (count vs `len(nodes)`, bytes vs `sum(len(node))`).
+
+3. **P2 — Audit key precision.** The balance layout description conflated the account-local key (`balancePrefix || tokenStandard`) with the full effective Momentum DB key (which wraps that with an account-store prefix and the account `Address`). **Fix:** the Phase 0 audit must spell out both layers distinctly so future proof encodings target the global form.
+
+4. **P2 — Missing JSON tags on `StateValueProof`.** Existing wire structs use snake_case tags (`chain_id`, `sorted_headers`, etc.); the original snippet was tag-less and would have produced Go-field-name JSON. **Fix:** explicit tags added on every field.
+
+5. **P2 — Forked-chain test belongs upstream.** `VerifyStateValue(state, proof, policy)` receives an already-built `HeaderState`; a forked chain is caught by `VerifyHeadersWithOptions` before state-value verification ever runs. **Fix:** the forked-chain case moves out of the state-value unit tests into a CLI integration test in Commit 7.
+
+6. **Open question — `PATCH_HASH` removed.** Codex asked whether `PATCH_HASH` belongs on `StateValueProof` at all, since `ChangesHash` supports a patch/delta claim ("this write happened") rather than state membership ("this value is current"). **Decision:** drop `PATCH_HASH` from `StateCommitmentKind`. Patch claims, if ever useful, get their own `StateDeltaProof` type in a future PR. Keeping the two separate at the type level avoids the semantic foot-gun.
 
 ## Codex review cadence
 
