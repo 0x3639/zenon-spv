@@ -78,6 +78,7 @@ Usage:
   zenon-spv verify-headers     <bundle.json> [--window {low|medium|high}] [--genesis-config <path>] [--state <path>] [--schedule <path>]
   zenon-spv verify-commitment  <bundle.json> [--window ...] [--genesis-config ...] [--state <path>] [--schedule <path>]
   zenon-spv verify-segment     <bundle.json> [--window ...] [--genesis-config ...] [--state <path>] [--schedule <path>]
+  zenon-spv verify-state-value <bundle.json> [--window ...] [--genesis-config ...] [--state <path>] [--schedule <path>]
   zenon-spv watch              [--peers <urls>|--rpc <url>] --state <path> [--schedule <path>] [--genesis-config ...]
                                [--window ...] [--interval <dur>] [--safety-margin <n>] [--batch-size <n>] [--quorum <k>]
 
@@ -96,6 +97,14 @@ Subcommands:
                       recompute, Ed25519 signature, account-chain
                       linkage, commitment lookup). Exit codes follow
                       the worst-block-wins convention.
+
+  verify-state-value  Verify the bundle's headers, then verify each
+                      entry in "state_value_proofs". REFUSED for every
+                      CommitmentKind today (no consensus-bound state
+                      root exists in current-protocol go-zenon; see
+                      docs/state-commitment-audit.md). Shipped now
+                      for forward compatibility with a future
+                      accepting kind.
 
   watch               Run as a stateful service. Tick at --interval
                       (default 10s), multi-peer-fetch new momentums,
@@ -130,6 +139,8 @@ func main() {
 		os.Exit(runVerifyCommitment(os.Args[2:]))
 	case "verify-segment":
 		os.Exit(runVerifySegment(os.Args[2:]))
+	case "verify-state-value":
+		os.Exit(runVerifyStateValue(os.Args[2:]))
 	case "watch":
 		os.Exit(runWatch(os.Args[2:]))
 	case "-h", "--help", "help":
@@ -231,6 +242,61 @@ func runVerifySegment(args []string) int {
 		}
 	}
 	if worst == verify.OutcomeAccept {
+		printAcceptCaveat(os.Stdout, ctx.opts)
+		if err := persistIfRequested(ctx.statePath, newState); err != nil {
+			fmt.Fprintf(os.Stderr, "state: %v\n", err)
+			return 70
+		}
+	}
+	return outcomeExitCode(worst)
+}
+
+// runVerifyStateValue verifies any StateValueProof entries in the
+// bundle. Every CommitmentKind is REFUSED today because no
+// consensus-bound authenticated state root exists in
+// current-protocol go-zenon (see docs/state-commitment-audit.md
+// and docs/state-proof-implementation-plan.md). The subcommand
+// exists for forward compatibility — when a real accepting kind
+// is added in a future PR, this CLI surface stays stable.
+func runVerifyStateValue(args []string) int {
+	ctx, code := prepareVerifierContext("verify-state-value", args)
+	if code != 0 {
+		return code
+	}
+	headerResult, newState := verify.VerifyHeadersWithOptions(ctx.bundle.Headers, ctx.state, ctx.opts)
+	printResult("headers", headerResult)
+	if headerResult.Outcome != verify.OutcomeAccept {
+		// Forked-chain / bad-genesis / etc. failures surface here
+		// BEFORE state-value verification runs. This is the
+		// structural reason the forked-chain attack is a CLI
+		// integration concern rather than a VerifyStateValue
+		// unit-test concern (see Commit 6's attacks file).
+		return outcomeExitCode(headerResult.Outcome)
+	}
+
+	if len(ctx.bundle.StateValueProofs) == 0 {
+		fmt.Println("state_value_proofs: REFUSED ReasonMissingEvidence (no state_value_proofs in bundle)")
+		return 2
+	}
+
+	worst := verify.OutcomeAccept
+	for i, p := range ctx.bundle.StateValueProofs {
+		res := verify.VerifyStateValue(newState, p, ctx.policy())
+		printResult(fmt.Sprintf("state_value_proof[%d] height=%d kind=%s",
+			i, p.MomentumHeight, p.CommitmentKind), res)
+		switch res.Outcome {
+		case verify.OutcomeReject:
+			worst = verify.OutcomeReject
+		case verify.OutcomeRefused:
+			if worst != verify.OutcomeReject {
+				worst = verify.OutcomeRefused
+			}
+		}
+	}
+	if worst == verify.OutcomeAccept {
+		// Unreachable today — VerifyStateValue refuses every kind.
+		// The shape is preserved so a future accepting kind plugs in
+		// without an extra CLI edit.
 		printAcceptCaveat(os.Stdout, ctx.opts)
 		if err := persistIfRequested(ctx.statePath, newState); err != nil {
 			fmt.Fprintf(os.Stderr, "state: %v\n", err)
