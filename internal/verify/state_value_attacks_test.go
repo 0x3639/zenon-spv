@@ -1,6 +1,7 @@
 package verify
 
 import (
+	"bytes"
 	"strings"
 	"testing"
 
@@ -85,15 +86,45 @@ func TestAttack_StateValueProof_StaleHeight(t *testing.T) {
 	}
 }
 
-// TestAttack_StateValueProof_DifferentAddress: a proof whose
-// Address field disagrees with what an honest authoring code
-// path would have produced for the (key_kind, key) pair.
-// Today the verifier never reaches address validation — REFUSED
-// on the kind dispatch. The test documents that address checks
-// are structurally downstream of kind support.
+// TestAttack_StateValueProof_DifferentAddress constructs a real
+// address-vs-key mismatch: p.Address is mutated to a different
+// value while p.Key still encodes the original fixtureAddress.
+// Per docs/state-commitment-audit.md §Q4, the global key layout
+// is accountStorePrefix || address(20b) || balanceKeyPrefix || zts.
+// An honest producer's Address would always match the address
+// bytes embedded in the key; a forged proof labels the key with
+// a different Address.
+//
+// Today the verifier never reaches address validation (kind
+// dispatch refuses first). The test documents the attack
+// faithfully so a future accepting kind, when added, will land
+// on a properly-shaped adversarial fixture rather than a
+// no-mismatch placeholder.
+//
+// Preconditions are asserted up front: if the fixture's key
+// shape ever drifts away from the audit's global form, this
+// test FAILS LOUDLY rather than silently constructing a
+// non-attack. Per Codex review of Commit 6.
 func TestAttack_StateValueProof_DifferentAddress(t *testing.T) {
 	state, p := stateValueFixture(t)
+
+	// Precondition: the fixture key must encode fixtureAddress.
+	// If it doesn't, the test's mutation creates no mismatch.
+	if len(p.Key) < fixtureKeyAddressOffset+fixtureKeyAddressLen {
+		t.Fatalf("fixture key length %d is too short to encode an address; layout drift", len(p.Key))
+	}
+	embeddedAddr := p.Key[fixtureKeyAddressOffset : fixtureKeyAddressOffset+fixtureKeyAddressLen]
+	if !bytes.Equal(embeddedAddr, fixtureAddress[:]) {
+		t.Fatalf("fixture key does not encode fixtureAddress; embedded=%x want=%x", embeddedAddr, fixtureAddress[:])
+	}
+
+	// Mutate the OUTER Address to construct a real mismatch.
+	// The key bytes still encode fixtureAddress, so an honest
+	// verifier that decoded the key would observe Address != key's address.
 	p.Address = chain.Address{0xDE, 0xAD, 0xBE, 0xEF}
+	if p.Address == fixtureAddress {
+		t.Fatal("attack address coincidentally equals fixtureAddress; pick a different value")
+	}
 
 	r := VerifyStateValue(state, p, statePolicyFor(state))
 	if r.Outcome != OutcomeRefused || r.Reason != ReasonUnsupportedStateCommitment {
@@ -101,19 +132,38 @@ func TestAttack_StateValueProof_DifferentAddress(t *testing.T) {
 	}
 }
 
-// TestAttack_StateValueProof_DifferentToken: a proof whose Key
-// bytes encode a different token-standard from what an honest
-// authoring code path would have produced. Same shape as the
-// address-mismatch attack — REFUSED on the kind dispatch today.
+// TestAttack_StateValueProof_DifferentToken constructs a real
+// token-mismatch: the last 10 bytes of p.Key (the ZTS slot per
+// the audit's §Q4 layout) are flipped to a different value while
+// the rest of the proof stays honest. A future accepting kind
+// would detect that the value encoded against the proven key
+// does not match the token the producer is claiming.
+//
+// As with the DifferentAddress test, this version FAILS LOUDLY
+// if the fixture key's shape drifts: a previous version of this
+// test silently no-op'd because `len(p.Key) < 10` and the
+// mutation guard skipped the XOR. Per Codex review of Commit 6.
 func TestAttack_StateValueProof_DifferentToken(t *testing.T) {
 	state, p := stateValueFixture(t)
-	// Per docs/state-commitment-audit.md §Q4, the global key is
-	// accountStorePrefix || address || balanceKeyPrefix || zts.
-	// Mutate the last 10 bytes (the token standard).
-	if len(p.Key) >= 10 {
-		for i := len(p.Key) - 10; i < len(p.Key); i++ {
-			p.Key[i] ^= 0xFF
-		}
+
+	// Precondition: key must be long enough to contain the
+	// token-standard bytes at the documented offset.
+	tokenEnd := fixtureKeyTokenStandardOffset + fixtureKeyTokenStandardLen
+	if len(p.Key) < tokenEnd {
+		t.Fatalf("fixture key length %d is too short to encode a token standard (need >= %d); layout drift", len(p.Key), tokenEnd)
+	}
+	embeddedToken := append([]byte{}, p.Key[fixtureKeyTokenStandardOffset:tokenEnd]...)
+	if !bytes.Equal(embeddedToken, fixtureTokenStandard[:]) {
+		t.Fatalf("fixture key does not encode fixtureTokenStandard; embedded=%x want=%x", embeddedToken, fixtureTokenStandard[:])
+	}
+
+	// Flip every byte of the token slot to guarantee mismatch.
+	for i := fixtureKeyTokenStandardOffset; i < tokenEnd; i++ {
+		p.Key[i] ^= 0xFF
+	}
+	mutated := p.Key[fixtureKeyTokenStandardOffset:tokenEnd]
+	if bytes.Equal(mutated, embeddedToken) {
+		t.Fatal("XOR-mutation produced identical bytes; cannot construct attack")
 	}
 
 	r := VerifyStateValue(state, p, statePolicyFor(state))

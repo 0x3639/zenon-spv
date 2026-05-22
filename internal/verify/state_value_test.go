@@ -8,11 +8,55 @@ import (
 	"github.com/0x3639/zenon-spv/internal/proof"
 )
 
+// fixtureAddress is the address encoded into the fixture's
+// StateValueProof. Mutating p.Address (but NOT the address bytes
+// embedded inside p.Key) is what the adversarial tests use to
+// construct address-vs-key mismatches.
+var fixtureAddress = chain.Address{0xAA}
+
+// fixtureTokenStandard is the 10-byte ZTS encoded into the
+// fixture's Key. The DifferentToken attack mutates the
+// corresponding bytes in p.Key to construct a key/value-vs-token
+// mismatch.
+var fixtureTokenStandard = [10]byte{'z', 'n', 'n', 0, 0, 0, 0, 0, 0, 0}
+
+// Global balance key layout per docs/state-commitment-audit.md §Q4:
+// accountStorePrefix(0x03) || address(20b) || balanceKeyPrefix(0x03) || tokenStandard(10b).
+const (
+	fixtureKeyAccountStorePrefixOffset = 0
+	fixtureKeyAddressOffset            = 1
+	fixtureKeyAddressLen               = 20
+	fixtureKeyBalancePrefixOffset      = 21
+	fixtureKeyTokenStandardOffset      = 22
+	fixtureKeyTokenStandardLen         = 10
+	fixtureKeyLen                      = 32
+)
+
+// buildFixtureBalanceKey returns the full 32-byte global balance
+// key for (addr, zts) under the layout documented in the audit.
+// Centralized so the adversarial tests can be honest about which
+// bytes encode which property.
+func buildFixtureBalanceKey(addr chain.Address, zts [10]byte) []byte {
+	key := make([]byte, fixtureKeyLen)
+	key[fixtureKeyAccountStorePrefixOffset] = 0x03
+	copy(key[fixtureKeyAddressOffset:fixtureKeyAddressOffset+fixtureKeyAddressLen], addr[:])
+	key[fixtureKeyBalancePrefixOffset] = 0x03
+	copy(key[fixtureKeyTokenStandardOffset:fixtureKeyTokenStandardOffset+fixtureKeyTokenStandardLen], zts[:])
+	return key
+}
+
 // stateValueFixture builds a HeaderState with `n` headers past
 // genesis and returns a StateValueProof whose MomentumHeight lands
 // at the FIRST retained header (i.e., `n - policy.W` below the
 // tip — exactly satisfying finality with W=2 and n=8). Callers
 // mutate fields to drive each test case.
+//
+// The proof's Key is the full 32-byte global balance key encoding
+// fixtureAddress + fixtureTokenStandard. Tests that construct
+// address-vs-key or token-vs-key mismatches mutate one side
+// while leaving the other intact (and assert the precondition
+// before mutating, so a silent no-op cannot give false
+// confidence).
 func stateValueFixture(t *testing.T) (HeaderState, proof.StateValueProof) {
 	t.Helper()
 	genesis, headers, _ := buildChain(t, 8)
@@ -30,9 +74,9 @@ func stateValueFixture(t *testing.T) (HeaderState, proof.StateValueProof) {
 	p := proof.StateValueProof{
 		ChainID:        genesis.ChainID,
 		MomentumHeight: target.Height,
-		Address:        chain.Address{0xAA},
+		Address:        fixtureAddress,
 		KeyKind:        proof.StateKeyAccountBalance,
-		Key:            []byte{0x03, 0xAA}, // not parsed today
+		Key:            buildFixtureBalanceKey(fixtureAddress, fixtureTokenStandard),
 		ClaimedValue:   []byte{0x01, 0xF4},
 		CommitmentKind: proof.StateCommitmentIAVLState,
 		StateRoot:      chain.Hash{0xCC},
