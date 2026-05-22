@@ -448,6 +448,20 @@ func preflightBundleBounds(bundle proof.HeaderBundle, policy verify.Policy) veri
 			}
 		}
 	}
+	// State-value-proof aggregate cap (state-proof PR / Phase 2).
+	// This lives in the CLI preflight, NOT in
+	// proof.LoadHeaderBundleBounded: `internal/proof` is already
+	// imported by `internal/verify`, so a verify.Policy reference
+	// inside proof would create a package cycle. The loader stays
+	// byte-only.
+	if policy.MaxStateValueProofs > 0 && len(bundle.StateValueProofs) > policy.MaxStateValueProofs {
+		return verify.Result{
+			Outcome:  verify.OutcomeRefused,
+			Reason:   verify.ReasonOversizedStateProof,
+			Message:  fmt.Sprintf("state_value_proofs=%d > MaxStateValueProofs=%d", len(bundle.StateValueProofs), policy.MaxStateValueProofs),
+			FailedAt: -1,
+		}
+	}
 	return verify.Result{Outcome: verify.OutcomeAccept, Reason: verify.ReasonOK, FailedAt: -1}
 }
 

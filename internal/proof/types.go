@@ -22,6 +22,18 @@ type HeaderBundle struct {
 	Headers        []chain.Header       `json:"headers"`
 	Commitments    []CommitmentEvidence `json:"commitments,omitempty"`
 	Segments       []AccountSegment     `json:"segments,omitempty"`
+
+	// StateValueProofs carries reserved-but-currently-REFUSED proofs
+	// of state-value membership (e.g., balance at height H). The
+	// field is optional (`omitempty`) so existing bundles round-trip
+	// unchanged. The verifier (VerifyStateValue, subsequent commit)
+	// returns REFUSED / ReasonUnsupportedStateCommitment for every
+	// supplied entry today: per docs/state-commitment-audit.md, no
+	// consensus-bound authenticated state root exists in
+	// current-protocol go-zenon. The wire envelope ships now so
+	// producers can author proofs in advance of any future protocol
+	// support without breaking the bundle format later.
+	StateValueProofs []StateValueProof `json:"state_value_proofs,omitempty"`
 }
 
 // AccountSegment is a contiguous range of AccountBlocks for a single
@@ -70,3 +82,86 @@ type FlatContentEvidence struct {
 // WireVersion is the current HeaderBundle wire version. Bump on any
 // breaking change per ADR 0001.
 const WireVersion uint32 = 1
+
+// StateKeyKind names the kind of state key inside a StateValueProof.
+// Kept narrow today; we add new kinds only as actual verifier
+// support lands. New values are non-breaking JSON additions since
+// the field is a string.
+type StateKeyKind string
+
+const (
+	// StateKeyAccountBalance proves a balance value for an
+	// (address, token-standard) pair under an account's storage
+	// namespace. Key encoding follows the global Momentum DB form
+	// documented in docs/state-commitment-audit.md §Q4:
+	// `accountStorePrefix || address || balanceKeyPrefix ||
+	// tokenStandard`.
+	StateKeyAccountBalance StateKeyKind = "ACCOUNT_BALANCE"
+)
+
+// StateCommitmentKind names the root commitment a StateValueProof
+// claims to authenticate against. Every kind defined here is
+// currently REFUSED by VerifyStateValue: per
+// docs/state-commitment-audit.md, no consensus-bound authenticated
+// state root exists in current-protocol go-zenon. The values below
+// are hypothetical future kinds; their JSON wire names are stable
+// so producers can begin authoring proofs in advance of any
+// upstream change.
+//
+// Deliberately EXCLUDED: a "PATCH_HASH" kind. ChangesHash supports
+// at most a patch/delta claim ("this write happened in the batch
+// applied at momentum H"), not state membership ("the value of key
+// K at momentum H is V"). The two have different semantics and
+// would have different proof shapes; if a delta claim ever becomes
+// useful, it gets its own distinct StateDeltaProof type, NOT a
+// CommitmentKind on StateValueProof. See
+// docs/state-proof-implementation-plan.md §"Three distinct tracks"
+// for the boundary discipline.
+type StateCommitmentKind string
+
+const (
+	// StateCommitmentMerkleContent: hypothetical future Merkle root
+	// over the existing sorted-AccountHeader content (i.e., a
+	// Merkleized form of MomentumContent.Hash). Useful for
+	// inclusion proofs only; does NOT authenticate state values
+	// without a state-tree commitment.
+	StateCommitmentMerkleContent StateCommitmentKind = "MERKLE_CONTENT"
+
+	// StateCommitmentIAVLState: hypothetical future authenticated
+	// state-tree root (IAVL+, Merkle Patricia Trie, or equivalent)
+	// committed inside the signed Momentum, covering all post-state
+	// keys across account balances, plasma, mailbox, and
+	// embedded-contract storage. This is the kind that would
+	// actually unblock accepting balance proofs if go-zenon ever
+	// adopted it.
+	StateCommitmentIAVLState StateCommitmentKind = "IAVL_STATE"
+)
+
+// StateValueProof is the wire envelope for a (height, key, value)
+// claim that the verifier checks against a consensus-bound
+// commitment of the given CommitmentKind. Every field is required
+// on the wire; the verifier (VerifyStateValue) enforces shape and
+// resource bounds even on REFUSED paths.
+//
+// JSON tags follow the existing HeaderBundle convention
+// (snake_case) so machine consumers in other languages can parse
+// the bundle without Go-shaped field names.
+//
+// Current behavior: every CommitmentKind returns REFUSED /
+// ReasonUnsupportedStateCommitment. See
+// docs/state-commitment-audit.md for the source-cited reason
+// (no authenticated state root exists in current-protocol
+// go-zenon). The verifier exists so future protocol support is a
+// small follow-up; this roadmap is explicitly NOT pursuing that
+// upstream change.
+type StateValueProof struct {
+	ChainID        uint64              `json:"chain_id"`
+	MomentumHeight uint64              `json:"momentum_height"`
+	Address        chain.Address       `json:"address"`
+	KeyKind        StateKeyKind        `json:"key_kind"`
+	Key            []byte              `json:"key"`
+	ClaimedValue   []byte              `json:"claimed_value"`
+	CommitmentKind StateCommitmentKind `json:"commitment_kind"`
+	StateRoot      chain.Hash          `json:"state_root"`
+	ProofNodes     [][]byte            `json:"proof_nodes"`
+}

@@ -133,6 +133,32 @@ func TestPreflightBundleBounds_PerBundleSegmentCount(t *testing.T) {
 	}
 }
 
+// TestPreflightBundleBounds_StateValueProofsAggregateCap is the
+// new aggregate cap from the state-proof PR / Phase 2. Per Codex
+// review of the implementation plan, MaxStateValueProofs lives in
+// CLI preflight (not in proof.LoadHeaderBundleBounded, which would
+// create a package cycle). The cap is applied across all
+// StateValueProof entries in the bundle.
+func TestPreflightBundleBounds_StateValueProofsAggregateCap(t *testing.T) {
+	bundle := proof.HeaderBundle{
+		StateValueProofs: []proof.StateValueProof{
+			{ChainID: 1}, {ChainID: 1}, {ChainID: 1},
+		},
+	}
+	policy := verify.Policy{MaxStateValueProofs: 2}
+
+	r := preflightBundleBounds(bundle, policy)
+	if r.Outcome != verify.OutcomeRefused || r.Reason != verify.ReasonOversizedStateProof {
+		t.Fatalf("expected REFUSED/ReasonOversizedStateProof, got %s", r)
+	}
+
+	// Sanity: zero MaxStateValueProofs disables the cap (back-compat).
+	r2 := preflightBundleBounds(bundle, verify.Policy{})
+	if r2.Outcome != verify.OutcomeAccept {
+		t.Fatalf("zero cap should disable the check; got %s", r2)
+	}
+}
+
 // TestSegmentBlockLabel_RealBlockUsesHeight: when bi indexes a real
 // block in seg.Blocks, the label includes its height.
 func TestSegmentBlockLabel_RealBlockUsesHeight(t *testing.T) {
