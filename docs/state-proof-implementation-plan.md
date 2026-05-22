@@ -15,7 +15,9 @@ The Explore agent's preliminary read of go-zenon (in the vault at `~/Github/zeno
 - **Balances** live at an **account-local key** `balancePrefix(0x03) || tokenStandard(10b)` with values encoded as big-endian integers (`/chain/account/balance.go` + `/chain/account/keys.go`). Note this is the key INSIDE the account-store namespace; the **full effective Momentum DB key** wraps that with the account-store prefix and the account `Address` before the account-local balance prefix (i.e., something like `accountStorePrefix || address(20b) || balancePrefix || tokenStandard`). Phase 0's audit must spell out both layers; future proof key encoding depends on the global form, not the account-local form. There is no proof path either way.
 - **Momentum content** commits account frontiers only (Address + Height + BlockHash per `AccountHeader`); no balance or state data.
 
-**Implication.** The Phase 0 audit is going to conclude "no consensus-bound authenticated state root exists in go-zenon today." Per the doc's own gate text — "If there is no consensus-bound authenticated state root, the verifier must not accept a `StateValueProof` that claims to prove full state membership" — Phase 4 (read-only balance proofs) is **structurally out of reach** until go-zenon ships protocol changes.
+**Implication.** The Phase 0 audit is going to conclude "no consensus-bound authenticated state root exists in go-zenon today." Per the doc's own gate text — "If there is no consensus-bound authenticated state root, the verifier must not accept a `StateValueProof` that claims to prove full state membership" — Phase 4 (read-only consensus balance proofs) is **structurally impossible against current-protocol go-zenon**, AND **this roadmap is explicitly NOT pursuing the upstream protocol change that would unblock it.**
+
+If go-zenon independently adopts an authenticated state root in the future, the wire envelope and refusal-locked verifier shipped here are forward-compatible — flipping `VerifyStateValue` from REFUSED to ACCEPT under a new commitment kind becomes a small follow-up. But the SPV side will not drive that change. Phase 4 is treated as an external dependency this repo does not own.
 
 This is fine and arguably the point. The PR can still land:
 - The audit document (settles the question definitively, with source citations).
@@ -25,6 +27,18 @@ This is fine and arguably the point. The PR can still land:
 - Adversarial test coverage that locks in the refusal contract.
 
 That's a coherent, honestly-named shipping product on its own.
+
+## Three distinct tracks (scope boundary)
+
+State-related work splits into three tracks that share vocabulary but **NOT trust semantics**. This PR builds in exactly one of them. The others either belong to a different repo (track 3) or to a future PR with explicitly weaker guarantees (track 2). Mixing them is the foot-gun this scope boundary exists to prevent.
+
+| Track | What it is | In this PR? |
+|---|---|---|
+| **1. Consensus state proof** | An authenticated, compact membership proof of `(height, key, value)` against a consensus-bound root. | **Always REFUSED.** Requires go-zenon protocol changes we are NOT pursuing. The `StateValueProof` wire envelope and `VerifyStateValue` skeleton land here as forward-compatible scaffolding only. |
+| **2. Sentinel/Sentry attestation** | k-of-n signatures from operator-attested providers over `(height, key, value)` triples. The SPV verifies signatures, not consensus. Distinct (weaker) trust tier. | **Not in this PR.** If pursued later, it lands as a SEPARATE mode (e.g., `state-attested`), with its own `Guarantee` value (e.g., `STATE_VALUE_ATTESTED`), **never under `STATE_VALUE_INCLUSION`**. |
+| **3. State indexing / balance lookup** | Provider infrastructure that serves balance and storage queries. Useful for wallets and explorers. | **Not in this PR and not in this repo.** Belongs to a node operator or a provider service. Has no verification semantics; queries return what they return. |
+
+The naming discipline is load-bearing. `STATE_VALUE_INCLUSION` MUST mean "proven under a consensus-bound state commitment." Calling a Sentinel-attested value `STATE_VALUE_INCLUSION` would lie about the trust assumption. The Phase 6 adversarial tests in this PR lock the refusal contract on track 1 specifically to prevent that conflation from being introduced later by accident.
 
 ## PR shape
 
@@ -228,8 +242,10 @@ Verification: `GOWORK=off go test -race ./...` green; CLI smoke shows the new su
 
 ## What's NOT in this PR
 
-- **Phase 4 (accepting balance proofs)** — gated on a go-zenon protocol change. The audit conclusion is the explicit hard gate from the doc.
-- **`fetch-bundle` state-proof support** — there's no go-zenon RPC for state proofs yet. Adding a stub would mislead; better to wait until the RPC exists. Note in `docs/state-commitment-audit.md` that this is a future requirement.
+- **Phase 4 (accepting consensus balance proofs)** — out of scope under current constraints. Requires a go-zenon protocol change (authenticated state root or equivalent) that this roadmap **explicitly does NOT pursue**. The forward-compatible wire envelope and refusal-locked verifier shipped here are designed so that if upstream independently lands such a change in the future, flipping `VerifyStateValue` from REFUSED to ACCEPT under that new kind is a small follow-up — but the SPV side will not drive the upstream work. Treat Phase 4 as an external dependency this repo does not own.
+- **Sentinel/Sentry attestation as a state proof** — possible future work, **not in this PR**. If pursued, it lands as a SEPARATE mode (e.g., `state-attested`) with its own `Guarantee` value distinct from `STATE_VALUE_INCLUSION`. See the "Three distinct tracks" section above. Conflating attestation with consensus inclusion is exactly the foot-gun this PR's refusal contract is designed to prevent.
+- **State indexing / balance lookup infrastructure** — not in this PR and not in this repo. Provider infra (node operators, explorers, wallets) lives elsewhere; this repo handles verification only.
+- **`fetch-bundle` state-proof support** — there's no go-zenon RPC for state proofs yet. Adding a stub would mislead; better to wait until the RPC exists, if it ever does. Recorded as an external dependency in `docs/state-commitment-audit.md` for future maintainers.
 - **Any work that depends on knowing what go-zenon's eventual proof shape will be** (e.g., specific Merkle tree depth, expected `ProofNodes` count). Stay format-agnostic.
 
 ## Critical files index
