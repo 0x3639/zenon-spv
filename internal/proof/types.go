@@ -103,30 +103,39 @@ const (
 // claims to authenticate against. Every kind defined here is
 // currently REFUSED by VerifyStateValue: per
 // docs/state-commitment-audit.md, no consensus-bound authenticated
-// state root exists in current-protocol go-zenon. The values below
-// are hypothetical future kinds; their JSON wire names are stable
-// so producers can begin authoring proofs in advance of any
-// upstream change.
+// state root exists in current-protocol go-zenon. Values here are
+// hypothetical future kinds; their JSON wire names are stable so
+// producers can begin authoring proofs in advance of any upstream
+// change.
 //
-// Deliberately EXCLUDED: a "PATCH_HASH" kind. ChangesHash supports
-// at most a patch/delta claim ("this write happened in the batch
-// applied at momentum H"), not state membership ("the value of key
-// K at momentum H is V"). The two have different semantics and
-// would have different proof shapes; if a delta claim ever becomes
-// useful, it gets its own distinct StateDeltaProof type, NOT a
-// CommitmentKind on StateValueProof. See
-// docs/state-proof-implementation-plan.md §"Three distinct tracks"
-// for the boundary discipline.
+// Deliberately EXCLUDED:
+//
+//   - "PATCH_HASH". ChangesHash supports at most a patch/delta
+//     claim ("this write happened in the batch applied at momentum
+//     H"), not state membership ("the value of key K at momentum H
+//     is V"). The two have different semantics and would have
+//     different proof shapes; if a delta claim ever becomes useful,
+//     it gets its own distinct StateDeltaProof type, NOT a
+//     CommitmentKind on StateValueProof.
+//
+//   - "MERKLE_CONTENT". A Merkleized form of MomentumContent.Hash
+//     authenticates ACCOUNT-HEADER INCLUSION, not state values.
+//     Account headers commit (Address, Height, BlockHash); they do
+//     not carry balances, plasma, or any other state. Per Codex
+//     review of this commit: putting MERKLE_CONTENT here would
+//     reintroduce the inclusion-vs-state-value confusion this
+//     entire scope boundary exists to prevent. If go-zenon ever
+//     ships a Merkleized content commitment, it goes on a future
+//     evidence type alongside CommitmentEvidence.Merkle (already
+//     reserved in this file), NOT on StateValueProof.CommitmentKind.
+//
+// See docs/state-proof-implementation-plan.md §"Three distinct
+// tracks" for the boundary discipline. The AST-based test
+// TestStateCommitmentKind_ForbidsConfusingKinds locks both
+// exclusions in.
 type StateCommitmentKind string
 
 const (
-	// StateCommitmentMerkleContent: hypothetical future Merkle root
-	// over the existing sorted-AccountHeader content (i.e., a
-	// Merkleized form of MomentumContent.Hash). Useful for
-	// inclusion proofs only; does NOT authenticate state values
-	// without a state-tree commitment.
-	StateCommitmentMerkleContent StateCommitmentKind = "MERKLE_CONTENT"
-
 	// StateCommitmentIAVLState: hypothetical future authenticated
 	// state-tree root (IAVL+, Merkle Patricia Trie, or equivalent)
 	// committed inside the signed Momentum, covering all post-state

@@ -118,8 +118,13 @@ Files touched:
       // at the type level avoids the semantic foot-gun where a
       // "state value proof" with kind=PATCH_HASH would be lying
       // about what it actually attests.
-      StateCommitmentMerkleContent StateCommitmentKind = "MERKLE_CONTENT" // hypothetical future
-      StateCommitmentIAVLState     StateCommitmentKind = "IAVL_STATE"     // hypothetical future
+      // MERKLE_CONTENT is ALSO intentionally excluded — see the
+      // Codex-review note below. A Merkleized MomentumContent
+      // authenticates account-header inclusion, not state-value
+      // membership. If go-zenon ever ships such a commitment, it
+      // lives on CommitmentEvidence.Merkle (already reserved),
+      // NOT on StateValueProof.CommitmentKind.
+      StateCommitmentIAVLState StateCommitmentKind = "IAVL_STATE" // hypothetical future
   )
 
   // JSON tags match the existing HeaderBundle convention

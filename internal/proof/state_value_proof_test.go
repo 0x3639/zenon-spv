@@ -3,6 +3,11 @@ package proof
 import (
 	"bytes"
 	"encoding/json"
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -152,25 +157,83 @@ func TestHeaderBundle_StateValueProofs_RoundTrip(t *testing.T) {
 	})
 }
 
-// TestStateCommitmentKind_PatchHashIsNotDefined enforces the
-// scope-discipline decision from docs/state-proof-implementation-
-// plan.md: ChangesHash supports at most a patch/delta claim, not
-// state-value membership. PATCH_HASH is INTENTIONALLY absent from
-// the StateCommitmentKind enum; if anyone tries to add it back,
-// this test will fail to compile or trip the "unknown kind" check.
+// TestStateCommitmentKind_ForbidsConfusingKinds enforces the two
+// scope-discipline exclusions documented on StateCommitmentKind:
 //
-// We compile-test the absence by asserting that the StateCommitmentKind
-// values currently defined do NOT include the literal "PATCH_HASH"
-// wire string. Adding a constant whose value is "PATCH_HASH" would
-// trip this.
-func TestStateCommitmentKind_PatchHashIsNotDefined(t *testing.T) {
-	defined := []StateCommitmentKind{
-		StateCommitmentMerkleContent,
-		StateCommitmentIAVLState,
+//   - "PATCH_HASH": ChangesHash supports at most a patch/delta
+//     claim, not state-value membership.
+//   - "MERKLE_CONTENT": a Merkleized MomentumContent root
+//     authenticates account-header inclusion, not state values.
+//
+// Previous version of this test iterated a hand-maintained slice of
+// defined values, which Codex review correctly flagged as not
+// actually enforcing absence: adding a new constant without
+// updating the slice would slip through. This version parses the
+// source file with go/parser and walks every const that has type
+// StateCommitmentKind, so a banned wire string CANNOT be added
+// without tripping the check — regardless of whether someone
+// updates any test fixture.
+func TestStateCommitmentKind_ForbidsConfusingKinds(t *testing.T) {
+	// Locate types.go next to this test file.
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller(0) failed; cannot locate source")
 	}
-	for _, k := range defined {
-		if string(k) == "PATCH_HASH" {
-			t.Fatalf("StateCommitmentKind %q must not be defined; ChangesHash supports only a delta claim, not state-value membership. See docs/state-proof-implementation-plan.md §\"Three distinct tracks\".", k)
+	sourcePath := filepath.Join(filepath.Dir(thisFile), "types.go")
+
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, sourcePath, nil, parser.ParseComments)
+	if err != nil {
+		t.Fatalf("parse %s: %v", sourcePath, err)
+	}
+
+	banned := map[string]string{
+		`"PATCH_HASH"`: "ChangesHash is a patch/delta hash, not a state-value commitment. " +
+			"If a delta claim ever becomes useful, it gets its own distinct " +
+			"StateDeltaProof type, NOT a CommitmentKind on StateValueProof.",
+		`"MERKLE_CONTENT"`: "A Merkleized MomentumContent authenticates account-header inclusion, " +
+			"not state values. If go-zenon ships such a commitment, it lives on a " +
+			"future CommitmentEvidence.Merkle, NOT on StateValueProof.CommitmentKind. " +
+			"Reintroducing it here reintroduces the inclusion-vs-state-value confusion " +
+			"this scope boundary exists to prevent.",
+	}
+
+	walked := 0
+	ast.Inspect(file, func(n ast.Node) bool {
+		decl, isGen := n.(*ast.GenDecl)
+		if !isGen || decl.Tok != token.CONST {
+			return true
 		}
+		for _, spec := range decl.Specs {
+			vs, ok := spec.(*ast.ValueSpec)
+			if !ok {
+				continue
+			}
+			typeIdent, ok := vs.Type.(*ast.Ident)
+			if !ok || typeIdent.Name != "StateCommitmentKind" {
+				continue
+			}
+			for i, name := range vs.Names {
+				if i >= len(vs.Values) {
+					continue
+				}
+				lit, ok := vs.Values[i].(*ast.BasicLit)
+				if !ok || lit.Kind != token.STRING {
+					continue
+				}
+				walked++
+				if reason, isBanned := banned[lit.Value]; isBanned {
+					t.Errorf("forbidden StateCommitmentKind constant %s = %s defined in %s. %s",
+						name.Name, lit.Value, sourcePath, reason)
+				}
+			}
+		}
+		return true
+	})
+
+	if walked == 0 {
+		t.Fatal("AST walk found zero StateCommitmentKind constants; " +
+			"the lock-in test is not actually checking anything. " +
+			"Has the type been renamed or moved?")
 	}
 }
