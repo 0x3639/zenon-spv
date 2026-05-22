@@ -68,6 +68,33 @@ func TestResultGuaranteesCannotContradict(t *testing.T) {
 	})
 }
 
+// TestGuaranteeStateValueInclusion_IsDefined asserts the new
+// state-proof guarantee enum value is defined and has the expected
+// canonical string. Locks in the wire name so future renames can't
+// happen silently (state-proof PR / Phase 1).
+//
+// The load-bearing "no current verifier path adds this to Proven"
+// regression is enforced by `assertLacksGuarantee(..., GuaranteeStateValueInclusion)`
+// in the existing real-ACCEPT-path tests:
+//
+//   - TestVerifyHeadersAcceptReportsBoundedGuarantees (header path)
+//   - TestVerifyHeadersWithOperatorScheduleReportsExternalScheduleTrust (header + producer schedule)
+//   - TestVerifyCommitmentAcceptReportsBoundedGuarantees (commitment path)
+//   - TestVerifySegmentAcceptReportsBoundedGuarantees (segment path)
+//   - TestAuthorizeRetainedWindow_RequiredScheduleReportsProducerAuthGuarantee (resumed-state producer auth)
+//
+// Those tests exercise the actual verifier code, so a future change
+// that accidentally adds STATE_VALUE_INCLUSION to one of those
+// builders' Proven slice will trip them. A previous version of this
+// file had a hand-constructed envelope test that claimed to lock
+// this in but couldn't: Codex review of Commit 2 flagged it, and
+// the assertion moved to the real-path tests.
+func TestGuaranteeStateValueInclusion_IsDefined(t *testing.T) {
+	if got, want := string(GuaranteeStateValueInclusion), "STATE_VALUE_INCLUSION"; got != want {
+		t.Fatalf("GuaranteeStateValueInclusion: got %q, want %q", got, want)
+	}
+}
+
 func hasGuarantee(xs []Guarantee, want Guarantee) bool {
 	for _, x := range xs {
 		if x == want {

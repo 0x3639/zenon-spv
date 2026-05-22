@@ -38,6 +38,19 @@ func TestPolicyForTier_PopulatesAllMaxFields(t *testing.T) {
 		if p.MaxTotalSegmentBlocks == 0 {
 			t.Errorf("%s: MaxTotalSegmentBlocks is zero", tier)
 		}
+		// State-proof caps (state-proof PR / Phase 2): per the
+		// implementation plan, a tier preset that silently leaves
+		// any of these at zero would disable that DoS guardrail
+		// without any signal to the operator. Lock them in here.
+		if p.MaxStateValueProofs == 0 {
+			t.Errorf("%s: MaxStateValueProofs is zero", tier)
+		}
+		if p.MaxStateProofNodes == 0 {
+			t.Errorf("%s: MaxStateProofNodes is zero", tier)
+		}
+		if p.MaxStateProofBytes == 0 {
+			t.Errorf("%s: MaxStateProofBytes is zero", tier)
+		}
 	}
 }
 

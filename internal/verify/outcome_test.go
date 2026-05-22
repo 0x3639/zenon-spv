@@ -25,6 +25,17 @@ func TestReasonCode_String_Stable(t *testing.T) {
 		ReasonInvalidHash, ReasonHeightNonMonotonic, ReasonWindowNotMet,
 		ReasonMissingEvidence, ReasonGenesisMismatch, ReasonChainIDMismatch,
 		ReasonPublicKeyMissing, ReasonSignatureMissing,
+		// State-proof codes (state-proof PR / Phase 1). Asserted
+		// here so a future refactor that drops one of them from
+		// the String() switch is caught immediately. Specific
+		// expected strings asserted in
+		// TestReasonCode_StateProofCodesHaveExpectedStrings below.
+		ReasonUnsupportedStateCommitment,
+		ReasonInvalidStateProof,
+		ReasonStateValueMismatch,
+		ReasonStateKeyMismatch,
+		ReasonMalformedStateProof,
+		ReasonOversizedStateProof,
 	}
 	seen := make(map[string]bool)
 	for _, r := range known {
@@ -39,6 +50,26 @@ func TestReasonCode_String_Stable(t *testing.T) {
 	}
 	if got := ReasonCode(999).String(); got != "ReasonCode(999)" {
 		t.Errorf("unknown reason: got %q", got)
+	}
+}
+
+// TestReasonCode_StateProofCodesHaveExpectedStrings locks in the
+// canonical names of the six new state-proof reason codes. These
+// names appear in CLI output and in machine-consumer logs, so they
+// are part of the stable wire surface (state-proof PR / Phase 1).
+func TestReasonCode_StateProofCodesHaveExpectedStrings(t *testing.T) {
+	want := map[ReasonCode]string{
+		ReasonUnsupportedStateCommitment: "ReasonUnsupportedStateCommitment",
+		ReasonInvalidStateProof:          "ReasonInvalidStateProof",
+		ReasonStateValueMismatch:         "ReasonStateValueMismatch",
+		ReasonStateKeyMismatch:           "ReasonStateKeyMismatch",
+		ReasonMalformedStateProof:        "ReasonMalformedStateProof",
+		ReasonOversizedStateProof:        "ReasonOversizedStateProof",
+	}
+	for r, expect := range want {
+		if got := r.String(); got != expect {
+			t.Errorf("ReasonCode(%d): got %q, want %q", int(r), got, expect)
+		}
 	}
 }
 

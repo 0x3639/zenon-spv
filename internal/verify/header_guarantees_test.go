@@ -21,6 +21,13 @@ func TestVerifyHeadersAcceptReportsBoundedGuarantees(t *testing.T) {
 	assertHasGuarantee(t, result.NotProven, GuaranteeCanonicality)
 	assertHasGuarantee(t, result.NotProven, GuaranteeStateTransition)
 	assertHasGuarantee(t, result.NotProven, GuaranteeProducerAuthorization)
+
+	// state-proof PR / Phase 1 refusal-contract lock: no current
+	// verifier path may add STATE_VALUE_INCLUSION to Proven. Per
+	// Codex review of Commit 2: this assertion belongs in the test
+	// that actually exercises the real VerifyHeaders path, not in
+	// a hand-constructed Result envelope test.
+	assertLacksGuarantee(t, result.Proven, GuaranteeStateValueInclusion)
 }
 
 func TestVerifyHeadersWithOperatorScheduleReportsExternalScheduleTrust(t *testing.T) {
@@ -48,6 +55,7 @@ func TestVerifyHeadersWithOperatorScheduleReportsExternalScheduleTrust(t *testin
 
 	assertHasGuarantee(t, result.Proven, GuaranteeProducerAuthorization)
 	assertHasTrustAssumption(t, result.TrustAssumptions, TrustExternalProducerSchedule)
+	assertLacksGuarantee(t, result.Proven, GuaranteeStateValueInclusion)
 }
 
 type staticProducerAuthorizer struct {

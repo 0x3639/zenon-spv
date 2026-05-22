@@ -61,6 +61,20 @@ const (
 	ReasonOversizedHeaders         // Branch 2b: header count exceeds Policy.MaxHeaders
 	ReasonOversizedEvidence        // Branch 2b: commitment evidence size exceeds cap
 	ReasonOversizedSegment         // Branch 2b: segment size exceeds cap
+
+	// State-proof reason codes (state-proof PR / Phase 1). All paired
+	// with the StateValueProof wire envelope and VerifyStateValue
+	// verifier landing in subsequent commits. ReasonUnsupportedStateCommitment
+	// is the structural REFUSED today: every StateCommitmentKind is
+	// unsupported because current-protocol go-zenon does not ship an
+	// authenticated state root. See docs/state-commitment-audit.md
+	// for the source-cited evidence.
+	ReasonUnsupportedStateCommitment // state-proof: requested StateCommitmentKind is not implemented (and may not be implementable against current-protocol go-zenon)
+	ReasonInvalidStateProof          // state-proof: proof bytes do not reconstruct the committed root from the supplied nodes
+	ReasonStateValueMismatch         // state-proof: reconstructed value at key K differs from p.ClaimedValue
+	ReasonStateKeyMismatch           // state-proof: decoded key from proof does not match (Address, KeyKind, Key)
+	ReasonMalformedStateProof        // state-proof: structural defect in ProofNodes (empty, duplicate, bad encoding)
+	ReasonOversizedStateProof        // state-proof: ProofNodes exceeds MaxStateProofNodes or sum exceeds MaxStateProofBytes
 )
 
 // String returns a stable, snake-case-equivalent name for serialization.
@@ -120,6 +134,18 @@ func (r ReasonCode) String() string {
 		return "ReasonOversizedEvidence"
 	case ReasonOversizedSegment:
 		return "ReasonOversizedSegment"
+	case ReasonUnsupportedStateCommitment:
+		return "ReasonUnsupportedStateCommitment"
+	case ReasonInvalidStateProof:
+		return "ReasonInvalidStateProof"
+	case ReasonStateValueMismatch:
+		return "ReasonStateValueMismatch"
+	case ReasonStateKeyMismatch:
+		return "ReasonStateKeyMismatch"
+	case ReasonMalformedStateProof:
+		return "ReasonMalformedStateProof"
+	case ReasonOversizedStateProof:
+		return "ReasonOversizedStateProof"
 	default:
 		return fmt.Sprintf("ReasonCode(%d)", int(r))
 	}

@@ -22,6 +22,14 @@ audit history.
 - [`state-proof-implementation-plan.md`](state-proof-implementation-plan.md)
   — concrete commit-by-commit roadmap that executes the state-proof
   plan above as a single PR.
+- [`state-commitment-audit.md`](state-commitment-audit.md) — Phase 0
+  audit; source-cited findings on what go-zenon does (and does not)
+  authenticate today, and the external dependencies that would be
+  required for an accepting `StateValueProof` path.
+- [`sentry-sentinel-role.md`](sentry-sentinel-role.md) — the role
+  boundary between provider availability and proof authority;
+  prevents Sentinel-attested values from ever being labeled
+  `STATE_VALUE_INCLUSION`.
 
 ## Historical review material
 

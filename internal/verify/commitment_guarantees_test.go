@@ -55,4 +55,9 @@ func TestVerifyCommitmentAcceptReportsBoundedGuarantees(t *testing.T) {
 	assertHasGuarantee(t, result.NotProven, GuaranteeStateTransition)
 
 	assertHasTrustAssumption(t, result.TrustAssumptions, TrustRetainedWindowDepth)
+
+	// state-proof PR / Phase 1 refusal-contract lock against the
+	// real VerifyCommitment ACCEPT path. Per Codex review of
+	// Commit 2.
+	assertLacksGuarantee(t, result.Proven, GuaranteeStateValueInclusion)
 }

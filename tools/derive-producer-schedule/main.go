@@ -128,7 +128,7 @@ func deriveSchedule(
 		batchSize = 100
 	}
 	total := through - from + 1
-	fmt.Fprintf(progress, "deriving schedule: heights %d..%d (%d momentums) across %d peers (quorum=%d)\n",
+	_, _ = fmt.Fprintf(progress, "deriving schedule: heights %d..%d (%d momentums) across %d peers (quorum=%d)\n",
 		from, through, total, len(urls), multi.Quorum)
 
 	// Record the actual per-peer frontier at derivation time as
@@ -181,7 +181,7 @@ func deriveSchedule(
 		}
 		if total >= batchSize*10 {
 			done := batchStart + count - from
-			fmt.Fprintf(progress, "  progress: %d/%d (%.1f%%) elapsed=%s\n",
+			_, _ = fmt.Fprintf(progress, "  progress: %d/%d (%.1f%%) elapsed=%s\n",
 				done, total, 100*float64(done)/float64(total), time.Since(startTime).Round(time.Second))
 		}
 	}

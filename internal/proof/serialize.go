@@ -44,7 +44,10 @@ func LoadHeaderBundleBounded(path string, maxBytes int64) (HeaderBundle, error) 
 	if err != nil {
 		return HeaderBundle{}, fmt.Errorf("open bundle: %w", err)
 	}
-	defer f.Close()
+	// Discard the Close error explicitly: read-only file, error is
+	// non-actionable and would only mask a more useful error from
+	// the read path above.
+	defer func() { _ = f.Close() }()
 
 	var src io.Reader = f
 	if maxBytes > 0 {

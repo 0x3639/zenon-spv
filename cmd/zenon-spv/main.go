@@ -5,6 +5,7 @@
 //	zenon-spv verify-headers     <bundle.json> [--window {low|medium|high}] [--genesis-config <path>] [--state <path>]
 //	zenon-spv verify-commitment  <bundle.json> [--window ...] [--genesis-config ...] [--state <path>]
 //	zenon-spv verify-segment     <bundle.json> [--window ...] [--genesis-config ...] [--state <path>]
+//	zenon-spv verify-state-value <bundle.json> [--window ...] [--genesis-config ...] [--state <path>]
 //	zenon-spv watch              [--peers <urls>|--rpc <url>] --state <path> [--genesis-config ...] [--window ...] [--interval <dur>] [--safety-margin <n>] [--batch-size <n>] [--quorum <k>]
 //
 // watch turns the verifier into a stateful service: load (or
@@ -29,9 +30,14 @@
 // CommitmentEvidence in the bundle's `commitments` array. verify-segment
 // runs verify-headers, verify-commitment, and then validates each
 // AccountSegment's blocks (per-block hash recompute, Ed25519 signature,
-// account-chain linkage, commitment lookup). Exit codes reflect the
-// worst outcome (REJECT > REFUSED > ACCEPT in severity); a header-level
-// failure short-circuits before commitments and segments are evaluated.
+// account-chain linkage, commitment lookup). verify-state-value runs
+// verify-headers and then validates each StateValueProof in the
+// bundle's `state_value_proofs` array — refused-by-design today
+// because no consensus-bound authenticated state root exists in
+// current-protocol go-zenon (see docs/state-commitment-audit.md).
+// Exit codes reflect the worst outcome (REJECT > REFUSED > ACCEPT in
+// severity); a header-level failure short-circuits before commitments,
+// segments, or state-value proofs are evaluated.
 //
 // Default genesis is the embedded mainnet trust root
 // (chain_id=1, height=1; see internal/verify/genesis.go and
@@ -78,6 +84,7 @@ Usage:
   zenon-spv verify-headers     <bundle.json> [--window {low|medium|high}] [--genesis-config <path>] [--state <path>] [--schedule <path>]
   zenon-spv verify-commitment  <bundle.json> [--window ...] [--genesis-config ...] [--state <path>] [--schedule <path>]
   zenon-spv verify-segment     <bundle.json> [--window ...] [--genesis-config ...] [--state <path>] [--schedule <path>]
+  zenon-spv verify-state-value <bundle.json> [--window ...] [--genesis-config ...] [--state <path>] [--schedule <path>]
   zenon-spv watch              [--peers <urls>|--rpc <url>] --state <path> [--schedule <path>] [--genesis-config ...]
                                [--window ...] [--interval <dur>] [--safety-margin <n>] [--batch-size <n>] [--quorum <k>]
 
@@ -96,6 +103,14 @@ Subcommands:
                       recompute, Ed25519 signature, account-chain
                       linkage, commitment lookup). Exit codes follow
                       the worst-block-wins convention.
+
+  verify-state-value  Verify the bundle's headers, then verify each
+                      entry in "state_value_proofs". REFUSED for every
+                      CommitmentKind today (no consensus-bound state
+                      root exists in current-protocol go-zenon; see
+                      docs/state-commitment-audit.md). Shipped now
+                      for forward compatibility with a future
+                      accepting kind.
 
   watch               Run as a stateful service. Tick at --interval
                       (default 10s), multi-peer-fetch new momentums,
@@ -130,6 +145,8 @@ func main() {
 		os.Exit(runVerifyCommitment(os.Args[2:]))
 	case "verify-segment":
 		os.Exit(runVerifySegment(os.Args[2:]))
+	case "verify-state-value":
+		os.Exit(runVerifyStateValue(os.Args[2:]))
 	case "watch":
 		os.Exit(runWatch(os.Args[2:]))
 	case "-h", "--help", "help":
@@ -231,6 +248,61 @@ func runVerifySegment(args []string) int {
 		}
 	}
 	if worst == verify.OutcomeAccept {
+		printAcceptCaveat(os.Stdout, ctx.opts)
+		if err := persistIfRequested(ctx.statePath, newState); err != nil {
+			fmt.Fprintf(os.Stderr, "state: %v\n", err)
+			return 70
+		}
+	}
+	return outcomeExitCode(worst)
+}
+
+// runVerifyStateValue verifies any StateValueProof entries in the
+// bundle. Every CommitmentKind is REFUSED today because no
+// consensus-bound authenticated state root exists in
+// current-protocol go-zenon (see docs/state-commitment-audit.md
+// and docs/state-proof-implementation-plan.md). The subcommand
+// exists for forward compatibility — when a real accepting kind
+// is added in a future PR, this CLI surface stays stable.
+func runVerifyStateValue(args []string) int {
+	ctx, code := prepareVerifierContext("verify-state-value", args)
+	if code != 0 {
+		return code
+	}
+	headerResult, newState := verify.VerifyHeadersWithOptions(ctx.bundle.Headers, ctx.state, ctx.opts)
+	printResult("headers", headerResult)
+	if headerResult.Outcome != verify.OutcomeAccept {
+		// Forked-chain / bad-genesis / etc. failures surface here
+		// BEFORE state-value verification runs. This is the
+		// structural reason the forked-chain attack is a CLI
+		// integration concern rather than a VerifyStateValue
+		// unit-test concern (see Commit 6's attacks file).
+		return outcomeExitCode(headerResult.Outcome)
+	}
+
+	if len(ctx.bundle.StateValueProofs) == 0 {
+		fmt.Println("state_value_proofs: REFUSED ReasonMissingEvidence (no state_value_proofs in bundle)")
+		return 2
+	}
+
+	worst := verify.OutcomeAccept
+	for i, p := range ctx.bundle.StateValueProofs {
+		res := verify.VerifyStateValue(newState, p, ctx.policy())
+		printResult(fmt.Sprintf("state_value_proof[%d] height=%d kind=%s",
+			i, p.MomentumHeight, p.CommitmentKind), res)
+		switch res.Outcome {
+		case verify.OutcomeReject:
+			worst = verify.OutcomeReject
+		case verify.OutcomeRefused:
+			if worst != verify.OutcomeReject {
+				worst = verify.OutcomeRefused
+			}
+		}
+	}
+	if worst == verify.OutcomeAccept {
+		// Unreachable today — VerifyStateValue refuses every kind.
+		// The shape is preserved so a future accepting kind plugs in
+		// without an extra CLI edit.
 		printAcceptCaveat(os.Stdout, ctx.opts)
 		if err := persistIfRequested(ctx.statePath, newState); err != nil {
 			fmt.Fprintf(os.Stderr, "state: %v\n", err)
@@ -448,6 +520,20 @@ func preflightBundleBounds(bundle proof.HeaderBundle, policy verify.Policy) veri
 			}
 		}
 	}
+	// State-value-proof aggregate cap (state-proof PR / Phase 2).
+	// This lives in the CLI preflight, NOT in
+	// proof.LoadHeaderBundleBounded: `internal/proof` is already
+	// imported by `internal/verify`, so a verify.Policy reference
+	// inside proof would create a package cycle. The loader stays
+	// byte-only.
+	if policy.MaxStateValueProofs > 0 && len(bundle.StateValueProofs) > policy.MaxStateValueProofs {
+		return verify.Result{
+			Outcome:  verify.OutcomeRefused,
+			Reason:   verify.ReasonOversizedStateProof,
+			Message:  fmt.Sprintf("state_value_proofs=%d > MaxStateValueProofs=%d", len(bundle.StateValueProofs), policy.MaxStateValueProofs),
+			FailedAt: -1,
+		}
+	}
 	return verify.Result{Outcome: verify.OutcomeAccept, Reason: verify.ReasonOK, FailedAt: -1}
 }
 
@@ -595,41 +681,37 @@ func printResult(label string, r verify.Result) { printResultTo(os.Stdout, label
 // used by tests that need to capture the structured output into a
 // bytes.Buffer. Production callers should use printResult.
 func printResultTo(w io.Writer, label string, r verify.Result) {
+	// Writes to w are best-effort: w is typically os.Stdout (where
+	// the error is unrecoverable) or a bytes.Buffer in tests
+	// (where errors don't happen). Explicit discard satisfies
+	// errcheck and documents the intent.
 	if label != "" {
-		fmt.Fprintf(w, "%s: %s\n", label, r)
+		_, _ = fmt.Fprintf(w, "%s: %s\n", label, r)
 	} else {
-		fmt.Fprintln(w, r)
+		_, _ = fmt.Fprintln(w, r)
 	}
 	printGuaranteesTo(w, "proven", r.Proven)
 	printGuaranteesTo(w, "not_proven", r.NotProven)
 	printTrustAssumptionsTo(w, "trust_assumptions", r.TrustAssumptions)
 }
 
-func printGuarantees(label string, xs []verify.Guarantee) {
-	printGuaranteesTo(os.Stdout, label, xs)
-}
-
 func printGuaranteesTo(w io.Writer, label string, xs []verify.Guarantee) {
 	if len(xs) == 0 {
 		return
 	}
-	fmt.Fprintf(w, "%s:\n", label)
+	_, _ = fmt.Fprintf(w, "%s:\n", label)
 	for _, x := range xs {
-		fmt.Fprintf(w, "  - %s\n", x)
+		_, _ = fmt.Fprintf(w, "  - %s\n", x)
 	}
-}
-
-func printTrustAssumptions(label string, xs []verify.TrustAssumption) {
-	printTrustAssumptionsTo(os.Stdout, label, xs)
 }
 
 func printTrustAssumptionsTo(w io.Writer, label string, xs []verify.TrustAssumption) {
 	if len(xs) == 0 {
 		return
 	}
-	fmt.Fprintf(w, "%s:\n", label)
+	_, _ = fmt.Fprintf(w, "%s:\n", label)
 	for _, x := range xs {
-		fmt.Fprintf(w, "  - %s\n", x)
+		_, _ = fmt.Fprintf(w, "  - %s\n", x)
 	}
 }
 
@@ -638,9 +720,9 @@ func printSourceTrust(w io.Writer, xs []verify.TrustAssumption) {
 		return
 	}
 
-	fmt.Fprintln(w, "source_trust:")
+	_, _ = fmt.Fprintln(w, "source_trust:")
 	for _, x := range xs {
-		fmt.Fprintf(w, "  - %s\n", x)
+		_, _ = fmt.Fprintf(w, "  - %s\n", x)
 	}
 }
 
@@ -651,7 +733,7 @@ func printAcceptCaveat(w io.Writer, opts verify.VerifyOptions) {
 		// rather than emit a noisy empty caveat.
 		return
 	}
-	fmt.Fprintln(w, caveat)
+	_, _ = fmt.Fprintln(w, caveat)
 }
 
 // outcomeExitCode maps an Outcome to the documented exit-code matrix:

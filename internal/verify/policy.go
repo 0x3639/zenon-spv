@@ -62,6 +62,24 @@ type Policy struct {
 	// defense-in-depth shape as MaxTotalFlatEvidenceMembers. 0
 	// disables.
 	MaxTotalSegmentBlocks int
+
+	// Per-bundle cap on the number of StateValueProof entries
+	// (state-proof PR / Phase 2). Enforced in the CLI preflight,
+	// NOT in proof.LoadHeaderBundleBounded — that loader stays
+	// byte-only because `internal/proof` is already imported by
+	// `internal/verify`, so a Policy reference inside proof would
+	// create a package cycle. 0 disables.
+	MaxStateValueProofs int
+
+	// Per-state-proof cap on len(ProofNodes) (count). Enforced
+	// inside VerifyStateValue (subsequent commit). 0 disables.
+	MaxStateProofNodes int
+
+	// Per-state-proof cap on sum(len(node)) across ProofNodes
+	// (byte total). Distinct from MaxStateProofNodes because a
+	// count-only cap is bypassable by one huge node. Enforced
+	// inside VerifyStateValue. 0 disables.
+	MaxStateProofBytes int
 }
 
 // Window-tier constants per spec §2.3:
@@ -86,6 +104,17 @@ const (
 	DefaultMaxSegments                 int   = 1_000
 	DefaultMaxSegmentBlocks            int   = 10_000
 	DefaultMaxTotalSegmentBlocks       int   = 100_000
+
+	// State-proof caps (state-proof PR / Phase 2). Conservative
+	// initial defaults — every StateCommitmentKind currently
+	// REFUSES, so these only gate how much malformed/oversized
+	// input the verifier accepts before refusing on shape. Tune
+	// down once a real accepting kind exists with measured proof
+	// sizes (see docs/resource-bound-measurements.md for the
+	// pattern from Branch 2b).
+	DefaultMaxStateValueProofs int = 1_000
+	DefaultMaxStateProofNodes  int = 1_024
+	DefaultMaxStateProofBytes  int = 4 * 1024 * 1024 // 4 MiB per proof
 )
 
 // DefaultPolicy returns the conservative default (Low tier, full
@@ -120,5 +149,8 @@ func policyWithDefaults(w uint64) Policy {
 		MaxSegments:                 DefaultMaxSegments,
 		MaxSegmentBlocks:            DefaultMaxSegmentBlocks,
 		MaxTotalSegmentBlocks:       DefaultMaxTotalSegmentBlocks,
+		MaxStateValueProofs:         DefaultMaxStateValueProofs,
+		MaxStateProofNodes:          DefaultMaxStateProofNodes,
+		MaxStateProofBytes:          DefaultMaxStateProofBytes,
 	}
 }
