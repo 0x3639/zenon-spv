@@ -3,9 +3,11 @@ package proof
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -13,6 +15,96 @@ import (
 
 	"github.com/0x3639/zenon-spv/internal/chain"
 )
+
+// bannedStateCommitmentKinds returns the forbidden wire strings and
+// their per-kind rejection messages. Used by the AST-based check
+// and meta-tested by TestStateCommitmentKindAuditor_DetectsAllForms.
+func bannedStateCommitmentKinds() map[string]string {
+	return map[string]string{
+		`"PATCH_HASH"`: "ChangesHash is a patch/delta hash, not a state-value commitment. " +
+			"If a delta claim ever becomes useful, it gets its own distinct " +
+			"StateDeltaProof type, NOT a CommitmentKind on StateValueProof.",
+		`"MERKLE_CONTENT"`: "A Merkleized MomentumContent authenticates account-header inclusion, " +
+			"not state values. If go-zenon ships such a commitment, it lives on a " +
+			"future CommitmentEvidence.Merkle, NOT on StateValueProof.CommitmentKind.",
+	}
+}
+
+// auditStateCommitmentKinds parses sourcePath and reports
+// (walkedSpecs, violations). walkedSpecs is the number of
+// StateCommitment* const specs the walker matched on; zero means
+// the walker isn't actually checking anything (e.g., the type has
+// been renamed). violations is a list of human-readable error
+// messages, one per banned literal found.
+//
+// Relevance check matches a const spec if EITHER (a) its declared
+// type is StateCommitmentKind, OR (b) any name in the spec starts
+// with "StateCommitment". (b) catches:
+//
+//   - `const StateCommitmentX = "PATCH_HASH"`           (untyped)
+//   - `const StateCommitmentX = StateCommitmentKind("PATCH_HASH")` (conversion)
+//
+// alongside the explicit-type form. The string literal walk uses
+// ast.Inspect on each value expression so conversions and any
+// nested expression shape is reached.
+func auditStateCommitmentKinds(sourcePath string) (walkedSpecs int, violations []string, err error) {
+	fset := token.NewFileSet()
+	file, perr := parser.ParseFile(fset, sourcePath, nil, parser.ParseComments)
+	if perr != nil {
+		return 0, nil, perr
+	}
+
+	banned := bannedStateCommitmentKinds()
+
+	ast.Inspect(file, func(n ast.Node) bool {
+		decl, isGen := n.(*ast.GenDecl)
+		if !isGen || decl.Tok != token.CONST {
+			return true
+		}
+		for _, spec := range decl.Specs {
+			vs, ok := spec.(*ast.ValueSpec)
+			if !ok {
+				continue
+			}
+			relevant := false
+			if typeIdent, ok := vs.Type.(*ast.Ident); ok && typeIdent.Name == "StateCommitmentKind" {
+				relevant = true
+			}
+			if !relevant {
+				for _, name := range vs.Names {
+					if strings.HasPrefix(name.Name, "StateCommitment") {
+						relevant = true
+						break
+					}
+				}
+			}
+			if !relevant {
+				continue
+			}
+			walkedSpecs++
+			for _, valueExpr := range vs.Values {
+				ast.Inspect(valueExpr, func(inner ast.Node) bool {
+					lit, ok := inner.(*ast.BasicLit)
+					if !ok || lit.Kind != token.STRING {
+						return true
+					}
+					if reason, isBanned := banned[lit.Value]; isBanned {
+						names := make([]string, len(vs.Names))
+						for i, name := range vs.Names {
+							names[i] = name.Name
+						}
+						violations = append(violations, fmt.Sprintf(
+							"forbidden string literal %s found inside StateCommitment* const %v (defined in %s). %s",
+							lit.Value, names, sourcePath, reason))
+					}
+					return true
+				})
+			}
+		}
+		return true
+	})
+	return walkedSpecs, violations, nil
+}
 
 // sampleStateValueProof returns a structurally-valid (but
 // semantically REFUSED-bound) StateValueProof for round-trip tests.
@@ -165,14 +257,27 @@ func TestHeaderBundle_StateValueProofs_RoundTrip(t *testing.T) {
 //   - "MERKLE_CONTENT": a Merkleized MomentumContent root
 //     authenticates account-header inclusion, not state values.
 //
-// Previous version of this test iterated a hand-maintained slice of
-// defined values, which Codex review correctly flagged as not
-// actually enforcing absence: adding a new constant without
-// updating the slice would slip through. This version parses the
-// source file with go/parser and walks every const that has type
-// StateCommitmentKind, so a banned wire string CANNOT be added
-// without tripping the check — regardless of whether someone
-// updates any test fixture.
+// This test parses the source file with go/parser and walks every
+// const declaration whose name is in the StateCommitment* family,
+// then inspects every string literal inside the value expression.
+// That catches the three forms a future addition could take:
+//
+//  1. Direct typed declaration:
+//     `const X StateCommitmentKind = "PATCH_HASH"`
+//  2. Untyped declaration that's then used as a StateCommitmentKind:
+//     `const X = "PATCH_HASH"`
+//  3. Conversion expression:
+//     `const X = StateCommitmentKind("PATCH_HASH")`
+//
+// Earlier versions only caught form (1); Codex correctly flagged
+// that as too narrow.
+//
+// Limitation (deliberate): string-literal concatenation inside the
+// const expression (e.g., `"PATCH" + "_HASH"`) is NOT caught
+// because the AST walk sees the literals separately. A future
+// addition that resorts to obfuscation is something a human
+// reviewer should catch — the bar this test sets is "good-faith
+// addition cannot slip through."
 func TestStateCommitmentKind_ForbidsConfusingKinds(t *testing.T) {
 	// Locate types.go next to this test file.
 	_, thisFile, _, ok := runtime.Caller(0)
@@ -181,59 +286,123 @@ func TestStateCommitmentKind_ForbidsConfusingKinds(t *testing.T) {
 	}
 	sourcePath := filepath.Join(filepath.Dir(thisFile), "types.go")
 
-	fset := token.NewFileSet()
-	file, err := parser.ParseFile(fset, sourcePath, nil, parser.ParseComments)
+	walked, violations, err := auditStateCommitmentKinds(sourcePath)
 	if err != nil {
-		t.Fatalf("parse %s: %v", sourcePath, err)
+		t.Fatalf("audit %s: %v", sourcePath, err)
 	}
-
-	banned := map[string]string{
-		`"PATCH_HASH"`: "ChangesHash is a patch/delta hash, not a state-value commitment. " +
-			"If a delta claim ever becomes useful, it gets its own distinct " +
-			"StateDeltaProof type, NOT a CommitmentKind on StateValueProof.",
-		`"MERKLE_CONTENT"`: "A Merkleized MomentumContent authenticates account-header inclusion, " +
-			"not state values. If go-zenon ships such a commitment, it lives on a " +
-			"future CommitmentEvidence.Merkle, NOT on StateValueProof.CommitmentKind. " +
-			"Reintroducing it here reintroduces the inclusion-vs-state-value confusion " +
-			"this scope boundary exists to prevent.",
+	for _, v := range violations {
+		t.Error(v)
 	}
-
-	walked := 0
-	ast.Inspect(file, func(n ast.Node) bool {
-		decl, isGen := n.(*ast.GenDecl)
-		if !isGen || decl.Tok != token.CONST {
-			return true
-		}
-		for _, spec := range decl.Specs {
-			vs, ok := spec.(*ast.ValueSpec)
-			if !ok {
-				continue
-			}
-			typeIdent, ok := vs.Type.(*ast.Ident)
-			if !ok || typeIdent.Name != "StateCommitmentKind" {
-				continue
-			}
-			for i, name := range vs.Names {
-				if i >= len(vs.Values) {
-					continue
-				}
-				lit, ok := vs.Values[i].(*ast.BasicLit)
-				if !ok || lit.Kind != token.STRING {
-					continue
-				}
-				walked++
-				if reason, isBanned := banned[lit.Value]; isBanned {
-					t.Errorf("forbidden StateCommitmentKind constant %s = %s defined in %s. %s",
-						name.Name, lit.Value, sourcePath, reason)
-				}
-			}
-		}
-		return true
-	})
-
 	if walked == 0 {
-		t.Fatal("AST walk found zero StateCommitmentKind constants; " +
+		t.Fatal("AST walk found zero StateCommitment* constants; " +
 			"the lock-in test is not actually checking anything. " +
 			"Has the type been renamed or moved?")
+	}
+}
+
+// TestStateCommitmentKindAuditor_DetectsAllForms is the meta-test
+// that confirms auditStateCommitmentKinds actually catches the
+// three forms Codex flagged. Writes a synthetic Go source file
+// containing all three forms (explicit type, untyped, conversion
+// expression) for BOTH banned strings, then asserts every variant
+// is reported as a violation.
+//
+// Without this meta-test, a regression that narrowed the AST walk
+// (e.g., dropping the conversion-expression handling) would
+// silently pass the live ForbidsConfusingKinds test against the
+// real types.go (which currently has no banned strings at all).
+func TestStateCommitmentKindAuditor_DetectsAllForms(t *testing.T) {
+	dir := t.TempDir()
+	srcPath := filepath.Join(dir, "fake_types.go")
+
+	// All three forms × two banned strings = six expected
+	// violations. Each unique const name appears exactly once so
+	// we can grep for it in the violation messages.
+	fakeSource := `package proof
+
+type StateCommitmentKind string
+
+const (
+	// Form 1: direct typed declaration
+	StateCommitmentPatchHashTyped StateCommitmentKind = "PATCH_HASH"
+	StateCommitmentMerkleContentTyped StateCommitmentKind = "MERKLE_CONTENT"
+
+	// Form 2: untyped declaration with StateCommitment name prefix
+	StateCommitmentPatchHashUntyped = "PATCH_HASH"
+	StateCommitmentMerkleContentUntyped = "MERKLE_CONTENT"
+
+	// Form 3: conversion expression
+	StateCommitmentPatchHashConverted = StateCommitmentKind("PATCH_HASH")
+	StateCommitmentMerkleContentConverted = StateCommitmentKind("MERKLE_CONTENT")
+)
+`
+	if err := os.WriteFile(srcPath, []byte(fakeSource), 0o644); err != nil {
+		t.Fatalf("write fake source: %v", err)
+	}
+
+	walked, violations, err := auditStateCommitmentKinds(srcPath)
+	if err != nil {
+		t.Fatalf("audit %s: %v", srcPath, err)
+	}
+	if walked < 6 {
+		t.Fatalf("walked %d StateCommitment* specs, expected at least 6 (three forms × two strings)", walked)
+	}
+
+	// Expect every form × every banned string to appear in violations.
+	wantedNames := []string{
+		"StateCommitmentPatchHashTyped",
+		"StateCommitmentMerkleContentTyped",
+		"StateCommitmentPatchHashUntyped",
+		"StateCommitmentMerkleContentUntyped",
+		"StateCommitmentPatchHashConverted",
+		"StateCommitmentMerkleContentConverted",
+	}
+	for _, want := range wantedNames {
+		found := false
+		for _, v := range violations {
+			if strings.Contains(v, want) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("expected a violation naming %s; got %d violations:\n  %s",
+				want, len(violations), strings.Join(violations, "\n  "))
+		}
+	}
+}
+
+// TestStateCommitmentKindAuditor_AcceptsAllowedKinds confirms a
+// legitimate StateCommitmentKind constant (e.g., the current
+// IAVL_STATE) is NOT reported as a violation. Catches over-eager
+// banning logic.
+func TestStateCommitmentKindAuditor_AcceptsAllowedKinds(t *testing.T) {
+	dir := t.TempDir()
+	srcPath := filepath.Join(dir, "fake_allowed_types.go")
+
+	fakeSource := `package proof
+
+type StateCommitmentKind string
+
+const (
+	StateCommitmentSomeFutureRoot StateCommitmentKind = "SOME_FUTURE_ROOT"
+	StateCommitmentAnotherKind                        = "ANOTHER_KIND"
+	StateCommitmentConverted                          = StateCommitmentKind("CONVERTED_KIND")
+)
+`
+	if err := os.WriteFile(srcPath, []byte(fakeSource), 0o644); err != nil {
+		t.Fatalf("write fake source: %v", err)
+	}
+
+	walked, violations, err := auditStateCommitmentKinds(srcPath)
+	if err != nil {
+		t.Fatalf("audit %s: %v", srcPath, err)
+	}
+	if walked != 3 {
+		t.Errorf("walked %d, want 3", walked)
+	}
+	if len(violations) != 0 {
+		t.Errorf("expected zero violations on allowed kinds; got %d:\n  %s",
+			len(violations), strings.Join(violations, "\n  "))
 	}
 }
