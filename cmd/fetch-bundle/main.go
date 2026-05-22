@@ -49,6 +49,7 @@ import (
 	"github.com/0x3639/zenon-spv/internal/chain"
 	"github.com/0x3639/zenon-spv/internal/fetch"
 	"github.com/0x3639/zenon-spv/internal/proof"
+	"github.com/0x3639/zenon-spv/internal/verify"
 )
 
 func main() {
@@ -189,6 +190,10 @@ func run(args []string) error {
 	}
 
 	fmt.Fprintf(os.Stderr, "OK: source=%s\n", sourceLabel)
+	if multi {
+		fmt.Fprintf(os.Stderr, "source_trust:\n")
+		fmt.Fprintf(os.Stderr, "  - %s\n", verify.TrustRPCQuorum)
+	}
 	fmt.Fprintf(os.Stderr, "OK: anchor height=%d hash=%s\n", anchor.Height, hex.EncodeToString(anchor.HeaderHash[:]))
 	fmt.Fprintf(os.Stderr, "OK: bundle heights=[%d..%d] count=%d\n",
 		bundleHeaders[0].Height, bundleHeaders[len(bundleHeaders)-1].Height, len(bundleHeaders))

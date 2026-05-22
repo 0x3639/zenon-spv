@@ -187,5 +187,32 @@ func VerifyHeadersWithOptions(headers []chain.Header, state HeaderState, opts Ve
 			fmt.Sprintf("retained=%d < policy.W=%d", len(working.RetainedWindow), policy.W)), state
 	}
 
-	return accept(), working
+	result := accept().
+		WithProven(
+			GuaranteeHeaderChainIntegrity,
+			GuaranteeSignatureAuthenticity,
+		).
+		WithNotProven(
+			GuaranteeContentInclusion,
+			GuaranteeCanonicality,
+			GuaranteeStateTransition,
+		)
+
+	if opts.ProducerAuth.Mode == ProducerAuthRequired {
+		result = result.WithProven(GuaranteeProducerAuthorization)
+
+		if opts.ProducerAuth.Authorizer != nil &&
+			opts.ProducerAuth.Authorizer.Source() == ProducerSourceOperatorAttested {
+			result = result.WithTrust(TrustExternalProducerSchedule)
+		}
+	} else {
+		result = result.WithNotProven(GuaranteeProducerAuthorization)
+	}
+
+	if working.Genesis.ChainID == MainnetChainID {
+		result = result.WithTrust(TrustCheckpointAnchor)
+	}
+
+	return result, working
+
 }

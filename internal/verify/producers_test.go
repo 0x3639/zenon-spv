@@ -526,3 +526,37 @@ func TestAcceptanceCaveatWithOptions_TierSelection(t *testing.T) {
 		t.Errorf("Required+nil should still print tier 1; got %q", tier1Nil)
 	}
 }
+
+func TestAuthorizeRetainedWindow_DisabledReportsProducerAuthNotProven(t *testing.T) {
+	genesis, headers, _ := buildChain(t, 4)
+	state := NewHeaderState(genesis, Policy{W: WindowLow})
+	for _, h := range headers {
+		state.Append(h)
+	}
+
+	r := AuthorizeRetainedWindow(state, VerifyOptions{Policy: Policy{W: WindowLow}})
+
+	if r.Outcome != OutcomeAccept {
+		t.Fatalf("Disabled mode must accept; got %s", r)
+	}
+	assertHasGuarantee(t, r.NotProven, GuaranteeProducerAuthorization)
+}
+
+func TestAuthorizeRetainedWindow_RequiredScheduleReportsProducerAuthGuarantee(t *testing.T) {
+	genesis, headers, _ := buildChain(t, 4)
+	state := NewHeaderState(genesis, Policy{W: WindowLow})
+	for _, h := range headers {
+		state.Append(h)
+	}
+
+	auth := NewScheduleAuthorizer(fixtureSchedule(t, 4))
+	r := AuthorizeRetainedWindow(state, VerifyOptions{
+		ProducerAuth: ProducerAuthOptions{Mode: ProducerAuthRequired, Authorizer: auth},
+	})
+
+	if r.Outcome != OutcomeAccept {
+		t.Fatalf("clean window under matching schedule must accept; got %s", r)
+	}
+	assertHasGuarantee(t, r.Proven, GuaranteeProducerAuthorization)
+	assertHasTrustAssumption(t, r.TrustAssumptions, TrustExternalProducerSchedule)
+}

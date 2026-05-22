@@ -45,22 +45,22 @@ const (
 	ReasonChainIDMismatch
 	ReasonPublicKeyMissing
 	ReasonSignatureMissing
-	ReasonInvalidContent     // Phase 2: recomputed content hash != header.ContentHash
-	ReasonNotMember          // Phase 2: target AccountHeader not present in evidence
-	ReasonHeightOutOfWindow  // Phase 2: commitment height not in retained window
-	ReasonMissingProof       // Phase 2: no Flat or Merkle proof attached
-	ReasonAddressMismatch              // Phase 3: block.Address != segment.Address
-	ReasonCheckpointMismatch           // Trust-hardening: header at a checkpoint height has the wrong hash
-	ReasonPublicKeyAddressMismatch     // F1: chain.PubKeyToAddress(block.PublicKey) != block.Address
-	ReasonEmbeddedMustNotSign          // F1: embedded-contract block carries non-empty PublicKey or Signature
-	ReasonInsufficientFinality         // F2: tip.Height < evidence.Height + policy.W (W headers past target)
-	ReasonParentNotAccepted            // Segment linkage: previous block in the segment did not ACCEPT, so this block cannot be part of the verified chain
-	ReasonUnauthorizedProducer         // Branch 5b: producer authorization mismatch (timestamp or producing-address disagrees with schedule)
-	ReasonProducerSetUnknown           // Branch 5b: no producer schedule covers this height; verifier refuses to extrapolate
-	ReasonOversizedBundle              // Branch 2b: bundle wire size exceeds Policy.MaxBundleBytes
-	ReasonOversizedHeaders             // Branch 2b: header count exceeds Policy.MaxHeaders
-	ReasonOversizedEvidence            // Branch 2b: commitment evidence size exceeds per-commitment or aggregate cap
-	ReasonOversizedSegment             // Branch 2b: segment size exceeds per-segment or aggregate cap
+	ReasonInvalidContent           // Phase 2: recomputed content hash != header.ContentHash
+	ReasonNotMember                // Phase 2: target AccountHeader not present in evidence
+	ReasonHeightOutOfWindow        // Phase 2: commitment height not in retained window
+	ReasonMissingProof             // Phase 2: no Flat or Merkle proof attached
+	ReasonAddressMismatch          // Phase 3: block.Address != segment.Address
+	ReasonCheckpointMismatch       // Trust-hardening: header at a checkpoint height has the wrong hash
+	ReasonPublicKeyAddressMismatch // F1: chain.PubKeyToAddress(block.PublicKey) != block.Address
+	ReasonEmbeddedMustNotSign      // F1: embedded-contract block carries non-empty PublicKey or Signature
+	ReasonInsufficientFinality     // F2: tip.Height < evidence.Height + policy.W (W headers past target)
+	ReasonParentNotAccepted        // Segment linkage: previous block in the segment did not ACCEPT
+	ReasonUnauthorizedProducer     // Branch 5b: producer authorization mismatch
+	ReasonProducerSetUnknown       // Branch 5b: no producer schedule covers this height
+	ReasonOversizedBundle          // Branch 2b: bundle wire size exceeds Policy.MaxBundleBytes
+	ReasonOversizedHeaders         // Branch 2b: header count exceeds Policy.MaxHeaders
+	ReasonOversizedEvidence        // Branch 2b: commitment evidence size exceeds cap
+	ReasonOversizedSegment         // Branch 2b: segment size exceeds cap
 )
 
 // String returns a stable, snake-case-equivalent name for serialization.
@@ -126,16 +126,29 @@ func (r ReasonCode) String() string {
 }
 
 // Result is the full verifier output: outcome + reason + per-header
-// fault index + free-form context.
+// fault index + free-form context + explicit proof envelope.
 //
 // FailedAt is the index in the input slice that caused REJECT, or -1
-// if not applicable (e.g. ACCEPT, REFUSED-on-empty-input,
-// REFUSED-on-window).
+// if not applicable.
 type Result struct {
 	Outcome  Outcome
 	Reason   ReasonCode
 	Message  string
 	FailedAt int
+
+	// Proven lists the exact guarantees established by this verifier
+	// path. ACCEPT must not be interpreted as proving anything absent
+	// from this list.
+	Proven []Guarantee
+
+	// NotProven lists important full-node guarantees this verifier path
+	// explicitly did not establish.
+	NotProven []Guarantee
+
+	// TrustAssumptions lists external trust anchors, quorum assumptions,
+	// retained-window assumptions, or schedule assumptions used by this
+	// verifier path.
+	TrustAssumptions []TrustAssumption
 }
 
 // String renders a single-line diagnostic suitable for CLI output and

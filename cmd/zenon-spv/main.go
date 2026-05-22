@@ -147,7 +147,7 @@ func runVerifyCommitment(args []string) int {
 		return code
 	}
 	headerResult, newState := verify.VerifyHeadersWithOptions(ctx.bundle.Headers, ctx.state, ctx.opts)
-	fmt.Printf("headers: %s\n", headerResult)
+	printResult("headers", headerResult)
 	if headerResult.Outcome != verify.OutcomeAccept {
 		return outcomeExitCode(headerResult.Outcome)
 	}
@@ -187,7 +187,7 @@ func runVerifyHeaders(args []string) int {
 		return code
 	}
 	result, newState := verify.VerifyHeadersWithOptions(ctx.bundle.Headers, ctx.state, ctx.opts)
-	fmt.Println(result)
+	printResult("", result)
 	if result.Outcome == verify.OutcomeAccept {
 		printAcceptCaveat(os.Stdout, ctx.opts)
 		if err := persistIfRequested(ctx.statePath, newState); err != nil {
@@ -204,7 +204,7 @@ func runVerifySegment(args []string) int {
 		return code
 	}
 	headerResult, newState := verify.VerifyHeadersWithOptions(ctx.bundle.Headers, ctx.state, ctx.opts)
-	fmt.Printf("headers: %s\n", headerResult)
+	printResult("headers", headerResult)
 	if headerResult.Outcome != verify.OutcomeAccept {
 		return outcomeExitCode(headerResult.Outcome)
 	}
@@ -219,7 +219,7 @@ func runVerifySegment(args []string) int {
 		segRes := verify.VerifySegment(newState, seg, ctx.bundle.Commitments, ctx.policy())
 		fmt.Printf("segment[%d] address=%x blocks=%d:\n", si, seg.Address, len(seg.Blocks))
 		for bi, r := range segRes.Blocks {
-			fmt.Printf("  block[%d] height=%d: %s\n", bi, seg.Blocks[bi].Height, r)
+			printResult(fmt.Sprintf("  block[%d] height=%d", bi, seg.Blocks[bi].Height), r)
 		}
 		switch segRes.Worst() {
 		case verify.OutcomeReject:
@@ -541,6 +541,7 @@ func runWatch(args []string) int {
 		}
 	}
 	printAcceptCaveat(os.Stderr, startupOpts)
+	printSourceTrust(os.Stderr, []verify.TrustAssumption{verify.TrustRPCQuorum})
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
@@ -573,6 +574,52 @@ func splitWatchPeers(s string) []string {
 // this build provides. The tier is selected from opts.ProducerAuth
 // (tier 1 when no authorizer; tier 2 under operator-attested
 // schedule). See internal/verify/caveats.go for tier definitions.
+
+func printResult(label string, r verify.Result) {
+	if label != "" {
+		fmt.Printf("%s: %s\n", label, r)
+	} else {
+		fmt.Println(r)
+	}
+
+	printGuarantees("proven", r.Proven)
+	printGuarantees("not_proven", r.NotProven)
+	printTrustAssumptions("trust_assumptions", r.TrustAssumptions)
+}
+
+func printGuarantees(label string, xs []verify.Guarantee) {
+	if len(xs) == 0 {
+		return
+	}
+
+	fmt.Printf("%s:\n", label)
+	for _, x := range xs {
+		fmt.Printf("  - %s\n", x)
+	}
+}
+
+func printTrustAssumptions(label string, xs []verify.TrustAssumption) {
+	if len(xs) == 0 {
+		return
+	}
+
+	fmt.Printf("%s:\n", label)
+	for _, x := range xs {
+		fmt.Printf("  - %s\n", x)
+	}
+}
+
+func printSourceTrust(w io.Writer, xs []verify.TrustAssumption) {
+	if len(xs) == 0 {
+		return
+	}
+
+	fmt.Fprintln(w, "source_trust:")
+	for _, x := range xs {
+		fmt.Fprintf(w, "  - %s\n", x)
+	}
+}
+
 func printAcceptCaveat(w io.Writer, opts verify.VerifyOptions) {
 	caveat := verify.AcceptanceCaveatWithOptions(opts)
 	if caveat == "" {

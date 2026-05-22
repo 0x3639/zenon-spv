@@ -17,17 +17,17 @@ import (
 //
 // Algorithm (FlatContentEvidence arm):
 //
-//	1. Find the verified momentum at evidence.Height in state.RetainedWindow.
-//	   Not found → REFUSED/HeightOutOfWindow.
-//	2. Enforce policy finality: tip.Height >= evidence.Height + policy.W
-//	   (W consecutive verified headers AFTER the queried height per
-//	   §2.3). Otherwise → REFUSED/InsufficientFinality (F2).
-//	3. Recompute MomentumContent.Hash() over evidence.Flat.SortedHeaders.
-//	   Must equal that momentum's ContentHash field.
-//	   Mismatch → REJECT/InvalidContent.
-//	4. Linear-scan SortedHeaders for evidence.Target.
-//	   Not found → REJECT/NotMember.
-//	5. Otherwise → ACCEPT.
+//  1. Find the verified momentum at evidence.Height in state.RetainedWindow.
+//     Not found → REFUSED/HeightOutOfWindow.
+//  2. Enforce policy finality: tip.Height >= evidence.Height + policy.W
+//     (W consecutive verified headers AFTER the queried height per
+//     §2.3). Otherwise → REFUSED/InsufficientFinality (F2).
+//  3. Recompute MomentumContent.Hash() over evidence.Flat.SortedHeaders.
+//     Must equal that momentum's ContentHash field.
+//     Mismatch → REJECT/InvalidContent.
+//  4. Linear-scan SortedHeaders for evidence.Target.
+//     Not found → REJECT/NotMember.
+//  5. Otherwise → ACCEPT.
 //
 // state must be the result of a successful VerifyHeaders call:
 // VerifyCommitment trusts state.RetainedWindow as the authoritative
@@ -101,7 +101,20 @@ func VerifyCommitment(state HeaderState, evidence proof.CommitmentEvidence, poli
 			FailedAt: -1,
 		}
 	}
-	return accept()
+	return accept().
+		WithProven(
+			GuaranteeContentInclusion,
+		).
+		WithNotProven(
+			GuaranteeHeaderChainIntegrity,
+			GuaranteeSignatureAuthenticity,
+			GuaranteeProducerAuthorization,
+			GuaranteeCanonicality,
+			GuaranteeStateTransition,
+		).
+		WithTrust(
+			TrustRetainedWindowDepth,
+		)
 }
 
 // VerifyCommitments validates a batch and returns one Result per
@@ -115,7 +128,6 @@ func VerifyCommitments(state HeaderState, batch []proof.CommitmentEvidence, poli
 	}
 	return out
 }
-
 
 func containsAccountHeader(slice []chain.AccountHeader, target chain.AccountHeader) bool {
 	for _, h := range slice {

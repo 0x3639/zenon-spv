@@ -25,8 +25,9 @@ import (
 //     verifier MUST NOT extrapolate.
 //
 // Callers map decisions to verifier outcomes:
-//   Unauthorized -> REJECT / ReasonUnauthorizedProducer
-//   Unknown      -> REFUSED / ReasonProducerSetUnknown
+//
+//	Unauthorized -> REJECT / ReasonUnauthorizedProducer
+//	Unknown      -> REFUSED / ReasonProducerSetUnknown
 type ProducerDecision int
 
 const (
@@ -379,7 +380,7 @@ func (a *ScheduleAuthorizer) Source() ProducerSource { return ProducerSourceOper
 // the highest tier), so this is negligible compared to fetch/verify.
 func AuthorizeRetainedWindow(state HeaderState, opts VerifyOptions) Result {
 	if opts.ProducerAuth.Mode != ProducerAuthRequired {
-		return accept()
+		return accept().WithNotProven(GuaranteeProducerAuthorization)
 	}
 	if opts.ProducerAuth.Authorizer == nil {
 		return refuse(ReasonProducerSetUnknown,
@@ -397,5 +398,10 @@ func AuthorizeRetainedWindow(state HeaderState, opts VerifyOptions) Result {
 				fmt.Sprintf("retained-window header at height=%d not covered by configured schedule", h.Height))
 		}
 	}
-	return accept()
+
+	result := accept().WithProven(GuaranteeProducerAuthorization)
+	if opts.ProducerAuth.Authorizer.Source() == ProducerSourceOperatorAttested {
+		result = result.WithTrust(TrustExternalProducerSchedule)
+	}
+	return result
 }

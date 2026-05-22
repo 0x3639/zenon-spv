@@ -39,10 +39,10 @@ func (r SegmentResult) Worst() Outcome {
 //     block.BlockHash. Mismatch → REJECT/InvalidHash.
 //  3. Binds block.PublicKey to block.Address per go-zenon
 //     (verifier/account_block.go:399-446):
-//       - Embedded-contract addresses (addr[0] == ContractAddrByte):
-//         require empty PublicKey AND empty Signature; skip ed25519.
-//       - User addresses: require chain.PubKeyToAddress(PublicKey) ==
-//         Address, then verify Ed25519 over the recomputed hash.
+//     - Embedded-contract addresses (addr[0] == ContractAddrByte):
+//     require empty PublicKey AND empty Signature; skip ed25519.
+//     - User addresses: require chain.PubKeyToAddress(PublicKey) ==
+//     Address, then verify Ed25519 over the recomputed hash.
 //  4. For blocks beyond the first, verifies linkage against a
 //     locally-verified parent anchor. The anchor advances ONLY after
 //     a block's final result is ACCEPT, so a forged BlockHash on a
@@ -248,6 +248,20 @@ func VerifySegment(state HeaderState, segment proof.AccountSegment, commitments 
 		// A stale duplicate at an out-of-window height no longer masks
 		// valid in-window evidence.
 		r := bestCommitmentResult(state, candidates, policy, i)
+		if r.Outcome == OutcomeAccept {
+			r = r.WithProven(GuaranteeContentInclusion).
+				WithNotProven(
+					GuaranteeHeaderChainIntegrity,
+					GuaranteeProducerAuthorization,
+					GuaranteeCanonicality,
+					GuaranteeStateTransition,
+				).
+				WithTrust(TrustRetainedWindowDepth)
+
+			if !b.Address.IsEmbeddedAddress() {
+				r = r.WithProven(GuaranteeSignatureAuthenticity)
+			}
+		}
 		out.Blocks[i] = r
 		previousOutcome = r.Outcome
 		if r.Outcome == OutcomeAccept {
