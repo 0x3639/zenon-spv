@@ -53,7 +53,7 @@ Answers the 5 audit questions with exact go-zenon source references:
 
 Conclusion section: **The SPV cannot accept a state-value proof against current-protocol go-zenon.** A `StateValueProof` wire type is still worth adding (forward compatibility) but every `VerifyStateValue` call must return `REFUSED/ReasonUnsupportedStateCommitment` until protocol additions land.
 
-Verification: doc-only commit; CI just needs `go test ./...` still green (no code changes).
+Verification: doc-only commit; CI just needs `GOWORK=off go test ./...` still green (no code changes).
 
 ### Commit 2 — `feat(guarantees): STATE_VALUE_INCLUSION + state-proof reason codes (Phase 1)`
 
@@ -73,7 +73,7 @@ Files touched:
 - `docs/trust-model.md` — new section distinguishing account-header inclusion (`CONTENT_INCLUSION`) from state-value inclusion (`STATE_VALUE_INCLUSION`). Be explicit that the latter is reserved and currently always REFUSED.
 - `docs/conformance.md` — surface the new mode taxonomy for integrators.
 
-Verification: `go test -race ./...` green; doc cross-references resolve.
+Verification: `GOWORK=off go test -race ./...` green; doc cross-references resolve.
 
 ### Commit 3 — `feat(proof): StateValueProof wire envelope (Phase 2)`
 
@@ -129,10 +129,16 @@ Files touched:
   - `MaxStateValueProofs int` — aggregate count of `StateValueProof` entries in a bundle.
   - `MaxStateProofNodes int` — per-proof cap on `len(p.ProofNodes)`.
   - `MaxStateProofBytes int` — per-proof cap on `sum(len(node))` across all nodes (closes the "one huge node bypass" hole).
+
+  Three additional `internal/verify/policy.go` items so the new caps actually take effect on tier presets (matches the established convention for prior Max* fields per Codex review of this plan):
+  - Add default constants alongside the existing tier-specific defaults (e.g., `defaultMaxStateValueProofs`, `defaultMaxStateProofNodes`, `defaultMaxStateProofBytes`).
+  - Extend `policyWithDefaults` so the three new fields fall back to defaults when zero.
+  - Wire defaults into `PolicyForTier("low"|"medium"|"high")` so every shipped tier preset has non-zero caps.
+- `internal/verify/policy_test.go` — extend the existing `PolicyForTier` bounds test to assert all three new fields are non-zero on every shipped tier. Catches regressions where a future tier preset forgets to set a state-proof cap and silently disables it.
 - `cmd/zenon-spv/main.go` — extend `preflightBundleBounds` to enforce `MaxStateValueProofs` (aggregate) before any verifier touches the bundle, same shape as the existing aggregate caps from Branch 2b. **Do NOT add this enforcement to `internal/proof/serialize.go`** — `proof` cannot depend on `verify.Policy` without creating a package cycle (per Codex review: `proof` is already imported by `verify`). `LoadHeaderBundleBounded` stays byte-only.
 - `internal/proof/types_test.go` — JSON round-trip for `StateValueProof`; `HeaderBundle` round-trip with and without the new field.
 
-Verification: `go test -race ./...` green; existing bundle fixtures unchanged (since the new field is `omitempty`).
+Verification: `GOWORK=off go test -race ./...` green; existing bundle fixtures unchanged (since the new field is `omitempty`).
 
 ### Commit 4 — `feat(verify): state-value verifier skeleton, refused by design (Phase 3 + 4-refusal)`
 
@@ -166,7 +172,7 @@ Files touched:
 
 - New `internal/verify/state_value_test.go`: positive-path tests for the early checks (chain mismatch, header missing, finality, oversized) plus an "unsupported kind" test for each defined `StateCommitmentKind`.
 
-Verification: `go test -race ./...` green. Verifier exists; never accepts.
+Verification: `GOWORK=off go test -race ./...` green. Verifier exists; never accepts.
 
 ### Commit 5 — `docs(roles): Sentry/Sentinel role boundary (Phase 5)`
 
@@ -200,7 +206,7 @@ New file: `internal/verify/state_value_attacks_test.go`. Tests (one per case):
 
 This commit also tightens Commit 4's verifier with the two new structural checks (`#7` and `#8` — empty/duplicate proof nodes) since they're cheap and worth implementing now.
 
-Verification: `go test -race ./...` green; all 11 cases pass.
+Verification: `GOWORK=off go test -race ./...` green; all 11 cases pass.
 
 ### Commit 7 — `feat(cli): verify-state-value subcommand`
 
@@ -215,9 +221,10 @@ Files touched:
 - `cmd/zenon-spv/main_test.go`:
   - `TestRunVerifyStateValue_UnsupportedKindRefuses`: load a bundle with one StateValueProof, expect exit code 2 (REFUSED) and structured output containing `not_proven:\n  - STATE_VALUE_INCLUSION`.
   - `TestRunVerifyStateValue_EmptyProofsRefuses`: load a bundle with zero StateValueProofs, expect REFUSED / `ReasonMissingEvidence` (matches the pattern from `verify-commitment`).
+  - `TestRunVerifyStateValue_ForkedHeaderChainRejectedBeforeStateProof`: the upstream-rejection case displaced from Commit 6's unit tests per Codex review #5. Construct a bundle whose `Headers` are signed but linked to a different `ClaimedGenesis`; expect the CLI to exit with REJECT / `ReasonGenesisMismatch` from `VerifyHeadersWithOptions` BEFORE `VerifyStateValue` is reached. Confirms the layering: state-proof verification cannot be tricked by a forked chain because header verification runs first and blocks the entire run.
 - `internal/testdata/state_value_proof_unsupported.json`: minimal fixture for the smoke test.
 
-Verification: `go test -race ./...` green; CLI smoke shows the new subcommand refuses honestly with structured output.
+Verification: `GOWORK=off go test -race ./...` green; CLI smoke shows the new subcommand refuses honestly with structured output.
 
 ## What's NOT in this PR
 
@@ -238,6 +245,7 @@ Verification: `go test -race ./...` green; CLI smoke shows the new subcommand re
 | `internal/proof/types.go` | 3 |
 | `internal/proof/types_test.go` | 3 |
 | `internal/verify/policy.go` | 3 |
+| `internal/verify/policy_test.go` (PolicyForTier bounds test extended) | 3 |
 | `cmd/zenon-spv/main.go` (preflight extension for MaxStateValueProofs) | 3 |
 | `internal/verify/state_value.go` (new) | 4, 6 |
 | `internal/verify/state_value_test.go` (new) | 4 |
@@ -278,8 +286,8 @@ gh pr create --title "feat: state-value proof envelope + audit (refused until pr
 Phase 4 (accepting balance proofs) is gated on a go-zenon protocol change per the audit. This PR ships the forward-compatible wire format and verifier surface so a future protocol upgrade lands cleanly without a re-design.
 
 ## Test plan
-- [x] go test -race ./... green
-- [x] go vet ./... clean
+- [x] GOWORK=off go test -race ./... green
+- [x] GOWORK=off go vet ./... clean
 - [x] CLI smoke verify-state-value returns REFUSED with structured output
 - [x] All 11 adversarial cases in state_value_attacks_test.go pass
 
@@ -303,6 +311,16 @@ Codex reviewed the first draft of this plan and flagged five issues, all real. F
 5. **P2 — Forked-chain test belongs upstream.** `VerifyStateValue(state, proof, policy)` receives an already-built `HeaderState`; a forked chain is caught by `VerifyHeadersWithOptions` before state-value verification ever runs. **Fix:** the forked-chain case moves out of the state-value unit tests into a CLI integration test in Commit 7.
 
 6. **Open question — `PATCH_HASH` removed.** Codex asked whether `PATCH_HASH` belongs on `StateValueProof` at all, since `ChangesHash` supports a patch/delta claim ("this write happened") rather than state membership ("this value is current"). **Decision:** drop `PATCH_HASH` from `StateCommitmentKind`. Patch claims, if ever useful, get their own `StateDeltaProof` type in a future PR. Keeping the two separate at the type level avoids the semantic foot-gun.
+
+### Second-pass review — three more items folded in
+
+After folding the six items above, Codex re-reviewed and flagged three smaller things, all addressed:
+
+7. **Commit 7 missing the forked-chain integration test bullet.** The previous edit moved the forked-chain case out of Commit 6's unit tests citing "CLI integration test in Commit 7" — but Commit 7's listed tests didn't actually include it. **Fix:** explicit bullet added — `TestRunVerifyStateValue_ForkedHeaderChainRejectedBeforeStateProof` — which constructs a bundle with mismatched `ClaimedGenesis` and confirms the CLI exits with REJECT / `ReasonGenesisMismatch` from `VerifyHeadersWithOptions` BEFORE `VerifyStateValue` is reached.
+
+8. **Verification commands inconsistent.** Some per-commit verification lines used `go test -race ./...` without the `GOWORK=off` prefix, but this repo sits under a parent `go.work` that blocks unprefixed invocations (per project memory). **Fix:** standardized every command in the plan to `GOWORK=off go test ...` / `GOWORK=off go vet ...` / `GOWORK=off go build ...`.
+
+9. **Commit 3 should call out policy-default plumbing.** The original Commit 3 added the three new `Max*` fields to `Policy` but didn't say they need defaults wired into the tier presets — a foot-gun where a future tier preset silently disables a cap by leaving the field zero. **Fix:** Commit 3 now explicitly requires (a) default constants alongside the existing tier defaults, (b) `policyWithDefaults` entries for all three new fields, (c) `PolicyForTier("low"|"medium"|"high")` populating them, and (d) a bounds test in `policy_test.go` that asserts all three are non-zero on every shipped tier.
 
 ## Codex review cadence
 
