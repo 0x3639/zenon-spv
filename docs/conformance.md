@@ -125,8 +125,9 @@ These are *known* and *documented*, not bugs.
      `TestVerifyHeadersAcceptReportsBoundedGuarantees`,
      `TestVerifyHeadersWithOperatorScheduleReportsExternalScheduleTrust`,
      `TestVerifyCommitmentAcceptReportsBoundedGuarantees`,
-     `TestVerifySegmentAcceptReportsBoundedGuarantees`, and
-     `TestAuthorizeRetainedWindow_RequiredScheduleReportsProducerAuthGuarantee`.
+     `TestVerifySegmentAcceptReportsBoundedGuarantees`,
+     `TestAuthorizeRetainedWindow_DisabledReportsProducerAuthNotProven`,
+     and `TestAuthorizeRetainedWindow_RequiredScheduleReportsProducerAuthGuarantee`.
      Any future verifier change that accidentally adds this
      guarantee to Proven will trip whichever path it touches.
    - **State-proof reason codes** (state-proof PR / Phase 1):

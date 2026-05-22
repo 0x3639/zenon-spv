@@ -540,6 +540,12 @@ func TestAuthorizeRetainedWindow_DisabledReportsProducerAuthNotProven(t *testing
 		t.Fatalf("Disabled mode must accept; got %s", r)
 	}
 	assertHasGuarantee(t, r.NotProven, GuaranteeProducerAuthorization)
+	// state-proof PR / Phase 1 refusal-contract lock. The
+	// disabled-authorizer path is the second real-execution ACCEPT
+	// branch of AuthorizeRetainedWindow (the first is the required-
+	// schedule path covered by the test below). Per Codex
+	// follow-up review of Commit 2.
+	assertLacksGuarantee(t, r.Proven, GuaranteeStateValueInclusion)
 }
 
 func TestAuthorizeRetainedWindow_RequiredScheduleReportsProducerAuthGuarantee(t *testing.T) {
