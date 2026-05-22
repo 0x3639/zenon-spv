@@ -1,6 +1,11 @@
-# Peer Review Fix Plan — FINAL
+# Peer Review Fix Plan
 
-> **STATUS: FINAL — accepted 2026-05-20.** This is the implementation plan of record.
+> **STATUS: HISTORICAL — accepted 2026-05-20.** This was the
+> implementation plan for the 2026-05 peer-review batch. The current
+> code and current docs now represent the landed behavior; use
+> [`conformance.md`](conformance.md) and [`trust-model.md`](trust-model.md)
+> for live guarantees, and [`state-proof-plan.md`](state-proof-plan.md)
+> for the next SPV capability plan.
 >
 > **Version history (chronological):**
 > - `peer-review-plan-v0.md` — Claude's initial plan
@@ -8,7 +13,8 @@
 > - `peer-review-plan-v2-responses.md` — Claude's responses to v1
 > - `peer-review-plan.md` (this file) — Codex's v3 unified plan, accepted by Claude
 >
-> Successor changes require a new versioned file and explicit supersession of this one.
+> Successor planning now lives in purpose-specific docs rather than new
+> versions of this historical plan.
 
 ## Summary
 
@@ -472,8 +478,14 @@ Semantics:
 4. **Producer-set source later:** locally derive/observe embedded-contract transitions in a separate phase.
 5. **Bounds defaults:** use Claude's proposed values as initial defaults, but record measurement before branch 2b merges.
 
-## Still open before production
+## Historical open items
 
-1. Exact schedule derivation procedure and attestation threshold for branch 5a.
-2. Exact measured resource-bound defaults after branch 2a.
-3. Where to store bundled schedules and how they are updated in releases.
+These were open when the plan was written. Current status:
+
+1. Schedule derivation is implemented by `tools/derive-producer-schedule`;
+   schedules remain operator attestations, not consensus proofs.
+2. Resource-bound defaults landed in `internal/verify/policy.go`; the
+   measurement basis is in [`resource-bound-measurements.md`](resource-bound-measurements.md).
+3. Schedule distribution remains an operator/release-management concern.
+   The verifier accepts an explicit `--schedule <path>` and refuses
+   uncovered heights rather than extrapolating.

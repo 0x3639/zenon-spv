@@ -4,6 +4,7 @@ This is a short, repo-local overview. The authoritative spec, notes, and
 architecture decisions live in the sibling `zenon-spv-vault` repo.
 
 For the trust model and what ACCEPT means, see [`trust-model.md`](trust-model.md).
+For the next state-proof work, see [`state-proof-plan.md`](state-proof-plan.md).
 
 ## Frame
 
@@ -11,11 +12,17 @@ The SPV implements the bounded-verification architecture described in
 `zenon-spv-vault/spec/architecture/bounded-verification-boundaries.md`.
 What that means in practice for callers:
 
-- ACCEPT means **local state consistency** with header-committed state on
-  a single chain observed by this verifier within a bounded window
-  (G1–G3). It does **not** imply finality, canonical-chain determination,
-  or global agreement. Today it also does **not** imply producer-set
-  authorization — see `trust-model.md`.
+- ACCEPT means the verifier path's explicit checks passed for a single
+  locally observed chain view. Header verification proves linked,
+  signed Momentum headers. Commitment verification proves
+  account-header inclusion under a Momentum `ContentHash`. Segment
+  verification proves signed account-block data whose headers were
+  included by those commitments.
+- ACCEPT does **not** imply balance/state-value inclusion today. It also
+  does not imply finality, canonical-chain determination, censorship
+  absence, or global agreement. Producer authorization is proven only
+  when `--schedule <path>` is configured; without it the CLI prints the
+  tier-1 caveat described in `trust-model.md`.
 - REJECT means evidence was present but cryptographically invalid.
 - REFUSED means evidence was missing, incomplete, or exceeded declared
   bounds. The verifier does not guess on REFUSED — callers must handle it
@@ -46,6 +53,8 @@ What that means in practice for callers:
   root from multiple peers.
 - `tools/derive-checkpoints/` — generate checkpoint commitment evidence
   for the embedded checkpoint list.
+- `tools/derive-producer-schedule/` — derive an operator-attested
+  per-momentum producer schedule for `--schedule`.
 
 ## Phases (shipped vs deferred)
 
@@ -58,10 +67,14 @@ What that means in practice for callers:
 - ✅ **Trust hardening** — embedded mainnet genesis + multi-peer genesis tool + embedded checkpoint list.
 - ✅ **Resource bounds enforcement** — `Policy.Max*` defaults + `proof.LoadHeaderBundleBounded`; bundle bytes, header count, per-commitment and aggregate flat evidence members, per-segment and aggregate segment blocks all capped. See `docs/resource-bound-measurements.md`.
 - ✅ **Producer-set verification (opt-in)** — per-momentum (height + timestamp + producing-address) schedule wired through `--schedule`; tier-2 caveat under operator attestation. Local derivation from chain-observed Pillar register/revoke events remains a future phase (tier 3).
+- ⏳ **State-value proof work** — not shipped. Current verifier proves
+  account-header inclusion, not account balance or arbitrary state. The
+  next step is the commitment audit in [`state-proof-plan.md`](state-proof-plan.md).
 - ⏳ **Phase 6** — full CLI conformance harness.
 - ⏳ **libp2p / WebRTC transport** — later.
 
-The active fix plan is `docs/peer-review-plan.md`.
+`docs/peer-review-plan.md` is now historical implementation history.
+The active forward plan for SPV capability is `docs/state-proof-plan.md`.
 
 ## Cross-cutting decisions
 
@@ -72,9 +85,6 @@ The active fix plan is `docs/peer-review-plan.md`.
 - ADR 0002 (`zenon-spv-vault/decisions/0002-genesis-trust-anchor.md`):
   embedded mainnet trust root + multi-peer recompute tool.
 - ADR 0004 (`zenon-spv-vault/decisions/0004-producer-set-quorum-check.md`):
-  producer-set check originally deferred; reopened in Branch 5 of
-  the fix plan with a written design gate (Branch 5a, see
-  [`producer-set-verification.md`](producer-set-verification.md))
-  and an opt-in implementation (Branch 5b, exposed via
-  `--schedule`). ADR 0005 will record the implementation-time
-  defaults.
+  producer-set check originally deferred, then reopened and implemented
+  as opt-in operator-attested per-momentum schedules exposed via
+  `--schedule`. See [`producer-set-verification.md`](producer-set-verification.md).

@@ -1,21 +1,17 @@
-# Producer Verification — Design (Branch 5a gate, revised v2)
+# Producer Verification
 
-> **Status:** Design accepted; implementation in Branch 5b.
+> **Status:** Implemented as opt-in producer authorization via
+> `--schedule <path>`.
 > **Supersedes:** the "defer indefinitely" outcome in vault ADR 0004.
-> **Companion:** [`trust-model.md`](trust-model.md) (forward reference — lands with Branch 4 of the active fix plan), [`peer-review-plan.md`](peer-review-plan.md) §5.
+> **Companion:** [`trust-model.md`](trust-model.md),
+> [`conformance.md`](conformance.md), and historical plan
+> [`peer-review-plan.md`](peer-review-plan.md) §5.
 >
-> **Vault sync (separate maintainer action):** vault ADR 0004
-> (`zenon-spv-vault/decisions/0004-producer-set-quorum-check.md`)
-> should be updated with a "Reopened" status and a back-pointer to
-> this document. From this repo the vault is treated as read-only
-> per project convention (auto-mode classifier enforces the
-> boundary); the SPV maintainer should land that diff in the vault
-> directly. Suggested vault summary: "Branch 5 of
-> `zenon-spv/docs/peer-review-plan.md` implements per-momentum
-> producer verification via
-> `zenon-spv/docs/producer-set-verification.md`. Active-set
-> membership was considered insufficient (see Codex review of v1)
-> and replaced by per-momentum expected-producer lookup."
+> **Vault sync (separate maintainer action):** if vault ADR 0004
+> (`zenon-spv-vault/decisions/0004-producer-set-quorum-check.md`) has
+> not already been updated, it should point back here and record that
+> this repo implements opt-in per-momentum producer verification.
+> From this repo the vault is treated as read-only.
 >
 > **Revision history**:
 > - v1 (b556f2c, 2026-05-20) — active-set membership per interval.
@@ -32,10 +28,18 @@
 >   height but not equal to their slot's StartTime; go-zenon
 >   rejects, height-only SPV did not).
 
-This document is the design gate for Branch 5b. It records the
-chosen producer-verification source, the schedule shape, the
-verifier semantics, and the residual trust assumptions before any
-code is written.
+This document records the chosen producer-verification source, the
+schedule shape, the verifier semantics, and the residual trust
+assumptions. The code path is now:
+
+1. `tools/derive-producer-schedule` derives a JSON schedule from
+   multiple peers.
+2. `verify.LoadProducerSchedule` validates schedule structure and hash.
+3. `zenon-spv verify-* --schedule <path>` and
+   `zenon-spv watch --schedule <path>` require each header's
+   `(height, timestamp, producing-address)` to match the schedule.
+4. A mismatch returns `REJECT/ReasonUnauthorizedProducer`; missing
+   coverage returns `REFUSED/ReasonProducerSetUnknown`.
 
 The vault ADR 0004 (`zenon-spv-vault/decisions/0004-producer-set-quorum-check.md`)
 originally evaluated five options and deferred all of them. This
@@ -130,16 +134,16 @@ It requires:
 - Running go-zenon's election algorithm against that state.
 - Tracking spork-mediated rule changes.
 
-That is multi-week scope and a parallel project to this branch.
-Branch 5b ships the per-momentum table now to close the
-immediate gap; local derivation becomes a follow-up that can drop
-the table once shipped.
+That is multi-week scope and a separate phase. The current
+implementation ships the per-momentum table to close the immediate
+gap; local derivation remains a follow-up that can drop the table once
+shipped.
 
 ### How the table is derived
 
-A tool (proposed `tools/derive-producer-schedule`, implemented in
-Branch 5b) iterates a declared height range against N independent
-peers via the existing JSON-RPC. For each height H in the range:
+`tools/derive-producer-schedule` iterates a declared height range
+against N independent peers via the existing JSON-RPC. For each height H
+in the range:
 
 1. Fetch the momentum at H from every peer (already supported via
    `internal/fetch.MultiClient`).
@@ -167,9 +171,9 @@ configurable via the tool's `--peers` flag.
 
 A checkpoint-interval range (~1M momentums) produces ~32MB of
 table data (1M × 32 bytes for `(uint64 Height, uint64 TimestampUnix,
-20-byte Address)` packed). Too large to embed in the binary. Branch
-5b ships the schedule as a JSON sidecar loaded via `--schedule
-<path>` at the CLI. The embedded-default route remains available
+20-byte Address)` packed). Too large to embed in the binary. The
+current implementation ships the schedule as a JSON sidecar loaded via
+`--schedule <path>` at the CLI. The embedded-default route remains available
 for short ranges if a future use case warrants it; the default
 ship-mode for mainnet is sidecar.
 
@@ -372,12 +376,10 @@ transitions) remain regardless of tier.
 
 ### Initial schedule
 
-At Branch 5b cut, operators run `tools/derive-producer-schedule`
-against three independent mainnet peers (same short-list used for
-`tools/verify-mainnet-genesis`, recorded in
-`reference_zenon_rpc_peers.md` in project memory). The first
-schedule should cover the height range matching the embedded
-checkpoint list, derived by walking every momentum in that range.
+For an initial schedule, operators run `tools/derive-producer-schedule`
+against three independent mainnet peers. A release schedule should cover
+the height range matching the embedded checkpoint list, derived by
+walking every momentum in that range.
 
 Derivation cost: ~1M momentums × ~3 peers × one RPC each ≈ 3M
 RPC calls. At a conservative 100 calls/s the run takes ~8 hours

@@ -1,5 +1,12 @@
-Fix list for 
-zenon-spv
+# Peer Review Fix List
+
+> **Status:** Historical source notes from the 2026-05 peer review. The
+> implementation plan is [`peer-review-plan.md`](peer-review-plan.md);
+> current live guarantees are in [`trust-model.md`](trust-model.md) and
+> [`conformance.md`](conformance.md).
+
+## Original fix list
+
 Must fix before production
 Fix VerifySegment linkage after rejected blocks
 Do not set prev = b after a rejected block.

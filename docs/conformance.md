@@ -3,9 +3,10 @@
 The SPV's conformance is governed by `zenon-spv-vault/spec/spv-implementation-guide.md` §8 and §10.
 
 For the trust-model framing that wraps these guarantees, see
-[`trust-model.md`](trust-model.md). For the active fix plan covering
-producer-set verification and resource bounds, see
-[`peer-review-plan.md`](peer-review-plan.md).
+[`trust-model.md`](trust-model.md). For the current forward plan toward
+state-value proofs, see [`state-proof-plan.md`](state-proof-plan.md).
+The prior peer-review implementation plan is retained as historical
+context in [`peer-review-plan.md`](peer-review-plan.md).
 
 ## §8 — Conformance test cases
 
@@ -42,6 +43,24 @@ Account-segment layer (Phase 3):
       `ReasonParentNotAccepted`.
 - [x] Empty segment → REFUSED/`MissingEvidence`.
 
+Producer-authorization layer (opt-in):
+
+- [x] No producer authorizer configured → header verification can
+      ACCEPT, but `PRODUCER_AUTHORIZATION` remains not proven and the
+      tier-1 caveat is printed.
+- [x] `--schedule <path>` loads an operator-attested per-momentum
+      schedule and requires each retained header's
+      `(height, timestamp, producer address)` to match.
+- [x] Schedule mismatch → REJECT/`ReasonUnauthorizedProducer`.
+- [x] Missing schedule coverage → REFUSED/`ReasonProducerSetUnknown`.
+
+State-value layer:
+
+- [ ] Account balance/state-value proof → not implemented. Current
+      commitment proofs bind account headers under `ContentHash`; they
+      do not prove a balance or arbitrary state value. See
+      [`state-proof-plan.md`](state-proof-plan.md).
+
 ## §10 — Implementation checklist
 
 - [x] Tri-state outcome with structured `ReasonCode` — implemented.
@@ -65,8 +84,7 @@ Account-segment layer (Phase 3):
 
 ## Known gaps
 
-These are *known* and *documented*, not bugs. Each links to its
-fix-plan branch where applicable.
+These are *known* and *documented*, not bugs.
 
 1. **Producer-set / quorum signature check is opt-in via
    `--schedule`.** With no schedule, the verifier only checks the
@@ -86,9 +104,12 @@ fix-plan branch where applicable.
    a single peer (`my.hc1node.com`, 2026-04-28). Operators reproducing
    the trust root cross-check via the tool.
 
-3. **`ChangesHash` is opaque.** Verified-as-bound but not independently
-   recomputed; an SPV cannot recompute state-transition hashes without
-   re-executing transitions.
+3. **No state-value proof path yet.** The verifier can prove
+   account-header inclusion under `ContentHash`, but not "address A had
+   token balance X at height H." `ChangesHash` is verified-as-bound by
+   the signed Momentum header but not independently recomputed. The next
+   planned work is the canonical commitment audit and balance-first
+   proof design in [`state-proof-plan.md`](state-proof-plan.md).
 
 _(Item 4 — resource bounds — was previously listed here.
 Enforcement landed in Branch 2: `Policy.Max*` defaults cap bundle
@@ -106,10 +127,13 @@ candidate findings; verification confirmed 10 valid, 1 partial (F3:
 DoS rather than forge), and 1 invalid (F4). All valid findings are
 closed; see those files for the per-finding writeup.
 
-## Peer-review fixes (active)
+## Peer-review fixes (2026-05)
 
 The 2026-05 peer review (`docs/peer-review.md`) surfaced eleven new
-items. Tracked in [`peer-review-plan.md`](peer-review-plan.md) as
-Branches 1–9; Branches 1, 3, and 4 ship in this batch. Producer-set
-verification (Branch 5) and resource bounds (Branch 2) have landed
-on local main; the remaining items are refactors (Branches 6–9).
+items. The implementation plan is retained in
+[`peer-review-plan.md`](peer-review-plan.md). The current code includes
+the core fixes that plan called out: segment-parent gating, fatal
+syncer save failures, explicit ACCEPT caveats, resource bounds,
+opt-in producer authorization, O(1) retained-header lookup, shared
+`MomentumContentHash`, DataHash tamper tests, embedded block signer
+tests, and minor cleanup.

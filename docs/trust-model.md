@@ -24,23 +24,30 @@ cannot evaluate this with the evidence I have".
 
 ## What ACCEPT proves today
 
-For a verified bundle:
+The exact proof depends on the verifier path that returned `ACCEPT`.
+`Result.Proven` is the machine-readable source of truth.
 
-- Every header in the range hashes to its claimed `HeaderHash` and
-  carries a valid Ed25519 signature against its claimed `PublicKey`.
-- The header chain links contiguously from a trusted anchor (the
-  embedded mainnet genesis, an embedded checkpoint, or a previously
-  persisted `HeaderState` tip).
-- Each verified commitment's `MomentumContent` recomputes to the
-  same `ContentHash` the verifier-bound header committed.
-- Each account block's `BlockHash` recomputes; the public key is
-  bound to the address via the go-zenon `PubKeyToAddress` rule;
-  the Ed25519 signature verifies; account-chain linkage matches a
-  *locally-verified* parent (a rejected block cannot become the
-  parent of a subsequent block).
+- Header verification proves every header in the range hashes to its
+  claimed `HeaderHash` and carries a valid Ed25519 signature against
+  its claimed `PublicKey`.
+- Header verification proves the header chain links contiguously from a
+  trusted anchor (the embedded mainnet genesis, an embedded checkpoint,
+  or a previously persisted `HeaderState` tip).
+- Commitment verification proves each verified commitment's
+  `MomentumContent` recomputes to the same `ContentHash` the
+  verifier-bound header committed.
+- Segment verification proves each account block's `BlockHash`
+  recomputes; the public key is bound to the address via the go-zenon
+  `PubKeyToAddress` rule; the Ed25519 signature verifies;
+  account-chain linkage matches a *locally-verified* parent (a rejected
+  block cannot become the parent of a subsequent block).
 - For commitment proofs, the committing momentum sits inside the
   retained window and at least `W` headers extend past it
   (`tip.Height ≥ evidence.Height + W`).
+- When `--schedule <path>` is configured, header verification also
+  proves producer authorization against that operator-attested
+  per-momentum schedule. Without `--schedule`, producer authorization
+  is explicitly not proven.
 
 ## What ACCEPT does NOT prove
 
@@ -88,6 +95,12 @@ rationale.)_
 7. **State transition correctness (NG1).** `ChangesHash` is bound
    but not independently recomputed — that would require
    re-executing every embedded contract call.
+
+8. **State-value or balance inclusion.** Current `CommitmentEvidence`
+   proves account-header inclusion under `ContentHash`; it does not
+   prove that an address had balance X or state value V at a height.
+   The planned path toward that capability is
+   [`state-proof-plan.md`](state-proof-plan.md).
 
 ## Caveat tiers
 

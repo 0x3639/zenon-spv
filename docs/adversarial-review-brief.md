@@ -1,5 +1,11 @@
 # Adversarial Review Brief — Zenon SPV
 
+> **Status:** Historical review prompt. It describes the repository at
+> the time of the 2026-04 adversarial review and intentionally preserves
+> then-current gaps such as deferred producer authorization. For current
+> behavior, read [`architecture.md`](architecture.md),
+> [`trust-model.md`](trust-model.md), and [`conformance.md`](conformance.md).
+
 **Audience:** an external reviewer (LLM or human) doing adversarial review against this codebase. You did not write this code; you should not assume it is correct.
 
 **Your job (TL;DR):** try to construct any input that causes the verifier to return `ACCEPT` despite a violated property. Or: any input causing `REJECT` for a genuinely valid bundle. Or: any path through the code that violates the stated trust frame. The implementation makes precise, falsifiable claims (Section 3); your job is to falsify them.

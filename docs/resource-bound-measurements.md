@@ -1,8 +1,8 @@
-# Resource Bound Measurements (Branch 2a)
+# Resource Bound Measurements
 
 Empirical measurements taken from mainnet (`chain_id=1`) on
-**2026-05-21** to inform the default bound values in Branch 2b
-(`internal/verify/policy.go`).
+**2026-05-21** to inform the default bound values now implemented in
+`internal/verify/policy.go`.
 
 The numbers below are starting values, not hard ceilings. The
 sample is small (one anchor near frontier ~13.3M) and the chain's
@@ -59,9 +59,8 @@ mainnet.
 window, or (b) walking back to a height where activity is known
 (e.g., a known Pillar registration). Both are follow-up work.
 
-Without empirical numbers, the Branch 2b defaults for these caps
-fall back to **conservative ceilings derived from the protocol
-shape**:
+Without empirical numbers, the implemented defaults for these caps use
+**conservative ceilings derived from the protocol shape**:
 
 - Each momentum's `MomentumContent` is bounded by the per-momentum
   block production rate (typically tens of account blocks per
@@ -70,7 +69,7 @@ shape**:
   rate (typically dozens of blocks per day for active addresses;
   thousands per day is the high end for system contracts).
 
-## Defaults proposed for Branch 2b
+## Implemented defaults
 
 Based on the empirical and protocol-shape evidence above, the
 following defaults are conservative ceilings (DoS guardrails)
@@ -78,7 +77,7 @@ rather than tight typical-case bounds. They are unlikely to be
 hit by legitimate use.
 
 ```go
-// internal/verify/policy.go (Branch 2b)
+// internal/verify/policy.go
 MaxBundleBytes              int64 =  64 * 1024 * 1024  // 64 MiB — covers ~10 days of header-only mainnet activity
 MaxHeaders                  int   = 100_000            // ~12 days of momentums; legitimate one-shot bundles will be much smaller
 MaxCommitments              int   =  10_000            // batch cap; typical bundles have <10
