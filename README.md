@@ -191,6 +191,23 @@ See [`docs/README.md`](docs/README.md) for the full index. Start here:
 - [`docs/state-commitment-audit.md`](docs/state-commitment-audit.md) — source-cited audit of what go-zenon authenticates (and the external dependencies that would unblock balance proofs).
 - [`docs/sentry-sentinel-role.md`](docs/sentry-sentinel-role.md) — proof-availability vs. proof-authority boundary.
 
+### Design decisions (ADRs in the vault)
+
+The repo-local docs above are operator-facing; the vault holds the
+design rationale and rejected-alternatives history. Most useful when
+asking "why did the SPV do X this way, and what did the maintainer
+already rule out?":
+
+- [`decisions/0001-proof-serialization.md`](https://github.com/0x3639/zenon-spv-vault/blob/main/decisions/0001-proof-serialization.md) — wire format (JSON shipped, protobuf reserved).
+- [`decisions/0002-genesis-trust-anchor.md`](https://github.com/0x3639/zenon-spv-vault/blob/main/decisions/0002-genesis-trust-anchor.md) — embedded mainnet genesis + multi-peer recompute.
+- [`decisions/0003-checkpoint-policy.md`](https://github.com/0x3639/zenon-spv-vault/blob/main/decisions/0003-checkpoint-policy.md) — embedded checkpoint list (long-range-attack defense).
+- [`decisions/0004-producer-set-quorum-check.md`](https://github.com/0x3639/zenon-spv-vault/blob/main/decisions/0004-producer-set-quorum-check.md) — original producer-set design (superseded by 0005).
+- [`decisions/0005-producer-schedule-shipped.md`](https://github.com/0x3639/zenon-spv-vault/blob/main/decisions/0005-producer-schedule-shipped.md) — opt-in tier-2 `--schedule` as actually built.
+- [`decisions/0006-explicit-guarantees-envelope.md`](https://github.com/0x3639/zenon-spv-vault/blob/main/decisions/0006-explicit-guarantees-envelope.md) — `Result.{Proven, NotProven, TrustAssumptions}`.
+- [`decisions/0007-state-value-refused-by-design.md`](https://github.com/0x3639/zenon-spv-vault/blob/main/decisions/0007-state-value-refused-by-design.md) — why `verify-state-value` REFUSEs every kind today.
+- [`decisions/0008-sentry-sentinel-role-boundary.md`](https://github.com/0x3639/zenon-spv-vault/blob/main/decisions/0008-sentry-sentinel-role-boundary.md) — proof-availability vs proof-authority.
+- [`decisions/0009-resource-bounds-policy.md`](https://github.com/0x3639/zenon-spv-vault/blob/main/decisions/0009-resource-bounds-policy.md) — `Policy.Max*` defaults that enforce G3.
+
 ## License
 
 MIT — see [`LICENSE`](LICENSE).
